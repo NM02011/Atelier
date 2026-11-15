@@ -300,7 +300,9 @@
       h('a', { class: 'chip' + (f.kind ? '' : ' on'), href: link({ kind: '' }) }, `All ${scoped.length}`),
       KIND_ORDER.map((k) => h('a', { class: 'chip' + (f.kind === k ? ' on' : '') + (count(k) ? '' : ' none'), href: link({ kind: k }) }, `${KIND[k].group} ${count(k)}`)));
     const vias = [...new Set(all.map((c) => c.via))];
-    const filters = h('div', { class: 'row', style: 'margin:10px 0 20px' },
+    // Filters and compare only earn their space once a project has more than a handful of contributions.
+    const busy = all.length > 5 || f.member || f.via;
+    const filters = !busy ? h('div', { style: 'height:20px' }) : h('div', { class: 'row', style: 'margin:10px 0 20px' },
       h('span', { class: 'muted small' }, 'From'),
       h('select', { onchange: (e) => go({ member: e.target.value }) }, h('option', { value: '' }, 'Everyone'), p.members.map((m) => h('option', { value: m.id, selected: m.id === f.member }, m.name))),
       h('span', { class: 'muted small' }, 'Made with'),
@@ -308,7 +310,7 @@
       all.length > 1 ? h('a', { class: 'btn', href: `#/p/${p.id}/compare` }, 'Compare two side by side') : null);
     const groups = (f.kind ? [f.kind] : KIND_ORDER).map((k) => {
       const rows = scoped.filter((c) => c.kind === k);
-      if (!rows.length && !f.kind && k !== 'draft' && k !== 'decision') return null;
+      if (!rows.length && !f.kind && k !== 'draft') return null;
       // Drafts that still need a decision come before the ones already in the document.
       const rank = (c) => ({ unused: 0, proposed: 1, in_document: 2 }[c.standing?.state] ?? 0);
       const live = rows.filter((c) => !c.replaced_by_id).sort((x, y) => rank(x) - rank(y)), old = rows.filter((c) => c.replaced_by_id);
@@ -519,9 +521,10 @@
     const aboutField = h('label', {}, 'About which version or contribution?',
       h('select', { name: 'about' }, h('option', { value: '' }, 'Choose…'), targets.map(([v, t]) => h('option', { value: v, selected: v === params.get('about') }, t))));
     const replaceable = contribs.filter((c) => !c.replaced_by_id && (c.author_id === state.me.id || p.my_role === 'owner'));
-    const replacesField = replaceable.length ? h('label', {}, 'Replaces an earlier contribution (optional)',
-      h('select', { name: 'replaces' }, h('option', { value: '' }, 'None'), replaceable.map((c) => h('option', { value: c.id }, `${KIND[c.kind]?.label || c.kind}: ${c.title}`))),
-      h('span', { class: 'small muted', style: 'font-weight:400' }, 'The earlier one stays readable but is greyed out and no longer suggested.')) : null;
+    const replacesField = replaceable.length ? h('details', {}, h('summary', { class: 'small muted' }, 'More options'),
+      h('label', { style: 'margin-top:10px' }, 'Replaces an earlier contribution',
+        h('select', { name: 'replaces' }, h('option', { value: '' }, 'None'), replaceable.map((c) => h('option', { value: c.id }, `${KIND[c.kind]?.label || c.kind}: ${c.title}`))),
+        h('span', { class: 'small muted', style: 'font-weight:400' }, 'The earlier one stays readable but is greyed out and no longer suggested.'))) : null;
     const contribFields = h('div', { class: 'stack' },
       h('div', { class: 'row' }, h('strong', {}, 'Who can see it?'),
         h('label', { class: 'check' }, h('input', { type: 'radio', name: 'visibility', value: 'shared', checked: true }), 'Shared with the project'),
