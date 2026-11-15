@@ -144,3 +144,29 @@ ol.steps { padding-left: 20px; } ol.steps li { margin-bottom: 6px; }
 @media (max-width: 600px) { .topbar { padding: 10px 16px; } #app { padding: 16px 16px 60px; } .card { padding: 16px; } }
 
 .row select { width: auto; max-width: 100%; }
+
+/* Contribution types */
+.pill.kind-draft { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.pill.kind-feedback { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.pill.kind-reference { background: var(--text); color: var(--surface); border-color: transparent; }
+.pill.kind-decision { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.chip { padding: 5px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: .88rem; }
+.chip:hover { text-decoration: none; border-color: var(--accent); }
+.chip.on { background: var(--text); color: var(--surface); border-color: var(--text); font-weight: 600; }
+.chip.none:not(.on) { color: var(--muted); }
+.group + .group { margin-top: 28px; }
+.group h2 { font-size: 1.05rem; margin: 0 0 2px; }
+.group > p { margin: 0 0 10px; }
+.item.replaced { background: var(--surface-2); }
+.item.replaced .title { text-decoration: line-through; color: var(--muted); font-weight: 400; }
+.typepick { border: 0; padding: 0; margin: 0; }
+.typepick legend { font-size: 1.2rem; font-weight: 600; padding: 0; margin-bottom: 4px; }
+.typegrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.typeopt { flex-direction: row; align-items: flex-start; gap: 10px; font-weight: 400; font-size: 1rem; border: 2px solid var(--border); border-radius: var(--radius); padding: 12px 14px; background: var(--surface); cursor: pointer; }
+.typeopt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.typeopt input { margin-top: 4px; }
+.typeopt > span { display: flex; flex-direction: column; gap: 2px; }
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.compare .card + .card { margin-top: 0; }
+@media (max-width: 800px) { .compare { grid-template-columns: 1fr; } }

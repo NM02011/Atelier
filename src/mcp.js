@@ -121,53 +121,73 @@ export function buildMcpServer() {
     } else {
       out.push('## Current version', 'None yet. Post contributions, then propose a combined version.');
     }
-    out.push('', '## Open proposals', p.open_proposals.length ? p.open_proposals.map(versionLine).join('\n') : 'None.',
-      '', `Open in Atelier: ${config.baseUrl}/#/p/${p.id}`);
+    out.push('', '## Open proposals', p.open_proposals.length ? p.open_proposals.map(versionLine).join('\n') : 'None.');
+    const refs = core.listContributions(actor, project_id).filter((c) => c.kind === 'reference' && !c.replaced_by_id);
+    if (refs.length) out.push('', '## Reference to read first (use read_contributions)', ...refs.map((c) => `- [${c.id}] "${c.title}" by ${c.author_name} ${how(c.via)}`));
+    out.push('', `Open in Atelier: ${config.baseUrl}/#/p/${p.id}`);
     return out.join('\n');
   }));
 
   server.registerTool('post_contribution', {
     title: 'Post contribution',
-    description: "Save the user's draft or note to a project. Shared contributions are visible to all members (and their AIs); private ones only to the user. Contributions are never edited later; post a new one instead." + CONFIRM,
+    description: "Save something to a project and say what type it is. The type decides what Atelier does with it:\n" +
+      Object.entries(core.KINDS).map(([k, d]) => `- ${k}: ${d}`).join('\n') +
+      "\nShared contributions are visible to all members (and their AIs); private ones only to the user. Contributions are never edited later: post a new one and name the old one in `replaces`." + CONFIRM,
     inputSchema: {
       project_id: z.string().describe('Project id'),
-      title: z.string().describe('Short title, e.g. "Austin\'s pitch draft"'),
+      title: z.string().describe('Short title, e.g. "Austin\'s pitch draft". For a decision, the one-line statement of what was decided.'),
       content: z.string().describe('The full text, in Markdown'),
+      kind: z.enum([...Object.keys(core.KINDS), 'note']).optional().describe('Required. The type: draft, feedback, reference, status, decision or transcript.'),
+      about: z.string().optional().describe('For feedback only, and required there: the id of the version (v_...) or contribution (c_...) it is about'),
+      replaces: z.string().optional().describe('Id (c_...) of an earlier contribution this one replaces. The old one stays readable but is no longer suggested. Only its author or the project owner can replace it.'),
       visibility: z.enum(['shared', 'private']).default('shared').describe('"shared" (default) or "private"'),
-      kind: z.enum(['draft', 'note', 'transcript']).default('draft').describe('draft (default), note, or transcript (a chat transcript or summary the user chose to save)'),
     },
     annotations: WRITE,
-  }, wrap(async ({ project_id, title, content, visibility, kind }, actor) => {
-    const c = core.postContribution(actor, project_id, { title, body: content, visibility, kind });
+  }, wrap(async ({ project_id, title, content, visibility, kind, about, replaces }, actor) => {
+    if (!kind) throw new core.AppError(400, `Say what type this is by setting kind. ${Object.entries(core.KINDS).map(([k, d]) => `${k}: ${d}`).join(' ')}`);
+    const c = core.postContribution(actor, project_id, { title, body: content, visibility, kind, about, replaces });
     const text = `Posted ${c.visibility} ${c.kind} "${c.title}" [${c.id}] to the project, credited to ${c.author_name} ${how(c.via)}.` +
+      ` Filed as ${c.kind}: ${core.KINDS[c.kind]}` +
+      (c.about_id ? ` It is about ${c.about_label}.` : '') +
+      (c.replaces_id ? ` It replaces "${c.replaces_title}", which is now marked as replaced.` : '') +
+      ` If the type is wrong, its author or the project owner can change it on its page: ${config.baseUrl}/#/c/${c.id}.` +
       (c.visibility === 'shared' ? ' Other members can now read it; when their AI reads it, the text is sent to that AI\'s provider.' : ' Only you can see it.');
     return c.visibility === 'shared' ? refresh(project_id, text) : text;
   }));
 
   server.registerTool('read_contributions', {
     title: 'Read contributions',
-    description: "Read a project's shared contributions (plus the user's own private ones), labeled by person and AI. Optionally filter by member name or email, or fetch one by id.",
+    description: "Read a project's shared contributions (plus the user's own private ones), labeled by type, person and AI. Reference contributions come first: read them before drafting. Replaced contributions are left out unless you ask for them. Optionally filter by type or member, or fetch one by id.",
     inputSchema: {
       project_id: z.string().describe('Project id'),
+      kind: z.enum(Object.keys(core.KINDS)).optional().describe('Only this type'),
       member: z.string().optional().describe('Only contributions from this member (name or email)'),
       contribution_id: z.string().optional().describe('Read just this contribution (c_...)'),
+      include_replaced: z.boolean().default(false).describe('Also show contributions that a newer one has replaced'),
       limit: z.number().int().min(1).max(50).default(20).describe('Most recent first; default 20'),
     },
     annotations: READ,
-  }, wrap(async ({ project_id, member, contribution_id, limit }, actor) => {
-    let rows;
+  }, wrap(async ({ project_id, kind, member, contribution_id, include_replaced, limit }, actor) => {
+    let rows, hidden = 0;
     if (contribution_id) {
       const c = core.getContribution(actor, contribution_id);
       if (c.project_id !== project_id) throw new core.AppError(404, 'That contribution is not in this project.');
       rows = [c];
     } else {
-      rows = core.listContributions(actor, project_id, { member, limit });
+      rows = core.listContributions(actor, project_id, { member, limit: 500 });
+      if (kind) rows = rows.filter((c) => c.kind === kind);
+      if (!include_replaced) { const n = rows.length; rows = rows.filter((c) => !c.replaced_by_id); hidden = n - rows.length; }
+      rows = [...rows.filter((c) => c.kind === 'reference'), ...rows.filter((c) => c.kind !== 'reference')].slice(0, limit);
     }
-    if (!rows.length) return member ? `No contributions from "${member}" that you can see.` : 'No contributions yet.';
+    if (!rows.length) return (member ? `No contributions from "${member}" that you can see.` : kind ? `No ${kind} contributions.` : 'No contributions yet.') + (hidden ? ` (${hidden} replaced; pass include_replaced to see them.)` : '');
+    const standing = (c) => !c.standing ? '' : c.standing.state === 'in_document' ? `, in the document since v${c.standing.since_number}`
+      : c.standing.state === 'proposed' ? `, proposed in v${c.standing.number}${c.standing.waiting_on.length ? ` (waiting on ${c.standing.waiting_on.join(', ')})` : ''}` : ', not yet used in the document';
     return rows.map((c) => {
-      const label = `"${c.title}" by ${c.author_name} ${how(c.via)}, ${when(c.created_at)}, ${c.visibility}`;
+      const label = `${c.kind.toUpperCase()}: "${c.title}" by ${c.author_name} ${how(c.via)}, ${when(c.created_at)}, ${c.visibility}${standing(c)}` +
+        (c.about_id ? `, about ${c.about_label} [${c.about_id}]` : '') + (c.replaces_id ? `, replaces [${c.replaces_id}]` : '') +
+        (c.replaced_by_id ? `, REPLACED by [${c.replaced_by_id}] "${c.replaced_by_title}"` : '');
       return `## [${c.id}] ${label}\n${fenced(c.author_id, actor, `contribution ${c.id} by ${c.author_name} ${how(c.via)}`, c.body)}`;
-    }).join('\n\n');
+    }).join('\n\n') + (hidden ? `\n\n(${hidden} replaced contribution(s) not shown; pass include_replaced to see them.)` : '');
   }));
 
   server.registerTool('propose_combined_version', {
@@ -290,8 +310,13 @@ export function buildMcpServer() {
     out.push('## Document', p.current_version ? versionLine(p.current_version) : 'No current version yet.',
       'If you have not read the current version in this conversation, call get_project first.', '');
     out.push('## Open proposals', p.open_proposals.length ? p.open_proposals.map((v) => `- ${versionLine(v)}`).join('\n') : 'None.', '');
-    out.push('## Shared contributions not yet in the document',
+    out.push('## Shared drafts not yet in the document',
       unused.length ? unused.map((c) => `- [${c.id}] "${c.title}" by ${c.author_name} ${how(c.via)}, ${when(c.created_at)}`).join('\n') : 'None.', '');
+    const live = core.listContributions(actor, project_id).filter((c) => c.visibility === 'shared' && !c.replaced_by_id);
+    const line = (c) => `- [${c.id}] "${c.title}" by ${c.author_name} ${how(c.via)}, ${when(c.created_at)}${c.about_id ? `, about ${c.about_label}` : ''}`;
+    const feedback = live.filter((c) => c.kind === 'feedback').slice(0, 5), decisions = live.filter((c) => c.kind === 'decision').slice(0, 5);
+    if (feedback.length) out.push('## Recent feedback to resolve', feedback.map(line).join('\n'), '');
+    if (decisions.length) out.push('## Decisions already made', decisions.map(line).join('\n'), '');
     if (ns.current) {
       out.push('## What has happened since the next steps were last saved',
         changes.length ? changes.map((a) => `- ${when(a.created_at)}: ${a.actor_name} ${how(a.via)}: ${a.action.replace(/_/g, ' ')}${a.detail ? ` (${a.detail.slice(0, 100)})` : ''}`).join('\n') : 'Nothing.', '');

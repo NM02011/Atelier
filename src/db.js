@@ -56,7 +56,9 @@ CREATE TABLE IF NOT EXISTS contributions (
   author_id TEXT NOT NULL REFERENCES users(id),
   title TEXT NOT NULL,
   body TEXT NOT NULL,
-  kind TEXT NOT NULL DEFAULT 'draft',          -- draft | note | transcript
+  kind TEXT NOT NULL DEFAULT 'draft',          -- draft | feedback | reference | status | decision | transcript
+  about_id TEXT,                               -- feedback: the version or contribution it is about
+  replaces_id TEXT,                            -- the earlier contribution this one replaces, if any
   visibility TEXT NOT NULL CHECK (visibility IN ('private','shared')),
   via TEXT NOT NULL,                           -- 'hand' or the AI label, e.g. 'Claude', 'ChatGPT', 'Qwen3 via LibreChat'
   created_at TEXT NOT NULL
@@ -163,6 +165,14 @@ CREATE INDEX IF NOT EXISTS idx_comments_target ON comments(target_id, created_at
 CREATE INDEX IF NOT EXISTS idx_activity_project ON activity(project_id, id);
 CREATE INDEX IF NOT EXISTS idx_reviews_version ON reviews(version_id, created_at);
 `);
+
+// Upgrades for databases created before a column or value existed.
+{
+  const cols = db.prepare('PRAGMA table_info(contributions)').all().map((c) => c.name);
+  if (!cols.includes('about_id')) db.exec('ALTER TABLE contributions ADD COLUMN about_id TEXT');
+  if (!cols.includes('replaces_id')) db.exec('ALTER TABLE contributions ADD COLUMN replaces_id TEXT');
+  db.exec("UPDATE contributions SET kind = 'reference' WHERE kind = 'note'");   // "note" became "reference"
+}
 
 export const now = () => new Date().toISOString();
 export const id = (prefix, bytes = 6) => `${prefix}_${randomBytes(bytes).toString('base64url')}`;

@@ -111,11 +111,11 @@ try {
   });
 
   await step('each posts a draft through their own AI (post_contribution)', async () => {
-    const a = await austinAI.call('post_contribution', { project_id: project.id, title: "Austin's pitch", content: '# Pitch\n\nTrails for everyone.\n\nBudget: TBD', visibility: 'shared' });
+    const a = await austinAI.call('post_contribution', { project_id: project.id, title: "Austin's pitch", content: '# Pitch\n\nTrails for everyone.\n\nBudget: TBD', kind: 'draft', visibility: 'shared' });
     draftA = a.match(/\[(c_[^\]]+)\]/)[1];
-    const n = await nickAI.call('post_contribution', { project_id: project.id, title: "Nick's pitch", content: '# Pitch\n\nOffline maps for every trail.\n\nBudget: $40k', visibility: 'shared' });
+    const n = await nickAI.call('post_contribution', { project_id: project.id, title: "Nick's pitch", content: '# Pitch\n\nOffline maps for every trail.\n\nBudget: $40k', kind: 'draft', visibility: 'shared' });
     draftN = n.match(/\[(c_[^\]]+)\]/)[1];
-    await nickAI.call('post_contribution', { project_id: project.id, title: 'Nick private notes', content: 'secret idea', visibility: 'private' });
+    await nickAI.call('post_contribution', { project_id: project.id, title: 'Nick private notes', content: 'secret idea', kind: 'reference', visibility: 'private' });
   });
 
   await step("each reads the other's draft, labeled by person and AI; private stays private", async () => {
@@ -193,7 +193,7 @@ try {
     await clientWeb('POST', '/api/signup', { email: 'client@example.com', name: 'Client', password: 'password789' });
     await clientWeb('POST', `/api/invites/${inv.token}/accept`, {});
     const clientAI = await connectAI(clientWeb, 'LibreChat', 'LibreChat');
-    await assert.rejects(clientAI.call('post_contribution', { project_id: project.id, title: 'x', content: 'y' }), /commenter/);
+    await assert.rejects(clientAI.call('post_contribution', { project_id: project.id, title: 'x', content: 'y', kind: 'draft' }), /commenter/);
     await clientAI.call('post_comment', { target_id: draftA, comment: 'Nice start' });
     await assert.rejects(clientAI.call('read_contributions', { project_id: project.id, contribution_id: 'c_doesnotexist' }), /not found/);
   });
@@ -275,9 +275,9 @@ try {
     assert.equal(ns.current.via, 'ChatGPT');
     assert.equal(ns.changes_since.length, 0, 'fresh right after saving');
     // A shared write makes them out of date and says so; a private one does not ask for a refresh.
-    const posted = await nickAI.call('post_contribution', { project_id: pid, title: 'Draft one', content: 'Hello.' });
+    const posted = await nickAI.call('post_contribution', { project_id: pid, title: 'Draft one', content: 'Hello.', kind: 'draft' });
     assert.match(posted, /next steps are now out of date/);
-    assert.doesNotMatch(await nickAI.call('post_contribution', { project_id: pid, title: 'Secret plan', content: 'x', visibility: 'private' }), /out of date/);
+    assert.doesNotMatch(await nickAI.call('post_contribution', { project_id: pid, title: 'Secret plan', content: 'x', kind: 'draft', visibility: 'private' }), /out of date/);
     ns = await nickWeb('GET', `/api/projects/${pid}/next-steps`);
     assert.equal(ns.changes_since.length, 2);
     const plan2 = await nickAI.call('plan_next_steps', { project_id: pid });
@@ -295,10 +295,69 @@ try {
     // Another member does not see someone else's private note in "what changed".
     const inv = await nickWeb('POST', `/api/projects/${pid}/invites`, { email: 'austin@example.com', role: 'viewer' });
     await austinWeb('POST', `/api/invites/${inv.token}/accept`, {});
-    await nickAI.call('post_contribution', { project_id: pid, title: 'Hidden', content: 'y', visibility: 'private' });
+    await nickAI.call('post_contribution', { project_id: pid, title: 'Hidden', content: 'y', kind: 'draft', visibility: 'private' });
     const seen = await austinWeb('GET', `/api/projects/${pid}/next-steps`);
     assert.ok(!JSON.stringify(seen).includes('Hidden'));
     await assert.rejects(austinWeb('POST', `/api/projects/${pid}/next-steps`, { body: 'x' }), /viewer/);
+  });
+
+  await step('contribution types: each type changes what Atelier does with a contribution', async () => {
+    const pid = (await nickAI.call('create_project', { name: 'Types test' })).match(/\[(p_[^\]]+)\]/)[1];
+    const post = async (args) => (await nickAI.call('post_contribution', { project_id: pid, content: 'Body.', ...args })).match(/\[(c_[^\]]+)\]/)[1];
+    const get = (cid) => nickWeb('GET', `/api/contributions/${cid}`);
+    // An AI has to say what it is posting.
+    await assert.rejects(nickAI.call('post_contribution', { project_id: pid, title: 'x', content: 'y' }), /Say what type this is.*draft:.*status:/s);
+    const d1 = await post({ title: 'Plan draft', content: '# Plan\n\nShip it.', kind: 'draft' });
+    const d2 = await post({ title: 'Second draft', kind: 'draft' });
+    assert.equal((await get(d2)).standing.state, 'unused');
+    // Status gets the date in its title; the old "note" is filed as reference.
+    const s1 = await post({ title: 'Tool check', kind: 'status' });
+    assert.match((await get(s1)).title, /^\d{4}-\d{2}-\d{2}: Tool check$/);
+    const r1 = await post({ title: 'Background', kind: 'note' });
+    assert.equal((await get(r1)).kind, 'reference');
+    // Feedback must say what it is about; a decision is one line.
+    await assert.rejects(post({ title: 'Too vague', kind: 'feedback' }), /what it is about/);
+    const f1 = await post({ title: 'On the plan', kind: 'feedback', about: d1 });
+    assert.equal((await get(f1)).about_label, 'Plan draft');
+    await assert.rejects(post({ title: 'x'.repeat(201), kind: 'decision' }), /one line/);
+    await post({ title: 'We start with accounting firms', kind: 'decision' });
+    // Replacing: the old one stays readable, is marked, and drops out of what AIs are shown.
+    const s2 = await post({ title: 'Tool recheck', kind: 'status', replaces: s1 });
+    assert.equal((await get(s1)).replaced_by_id, s2);
+    await assert.rejects(post({ title: 'Again', kind: 'status', replaces: s1 }), /already been replaced/);
+    const read = await nickAI.call('read_contributions', { project_id: pid });
+    assert.ok(read.startsWith(`## [${r1}] REFERENCE:`), 'reference comes first');
+    assert.doesNotMatch(read, /Tool check"/);
+    assert.match(read, /1 replaced contribution\(s\) not shown/);
+    assert.match(read, /DRAFT: "Second draft".*not yet used in the document/);
+    assert.match(await nickAI.call('read_contributions', { project_id: pid, kind: 'status', include_replaced: true }), /Tool check".*REPLACED by/);
+    assert.match(await nickAI.call('get_project', { project_id: pid }), new RegExp(`Reference to read first[^]*\\[${r1}\\] "Background"`));
+    // Only drafts go into the document, and a draft shows where it stands.
+    await assert.rejects(nickAI.call('add_to_document', { contribution_id: r1 }), /Only drafts can be added.*filed as reference/);
+    await nickAI.call('add_to_document', { contribution_id: d1 });
+    assert.deepEqual((await get(d1)).standing, { state: 'in_document', since_number: 1 });
+    const plan = await nickAI.call('plan_next_steps', { project_id: pid });
+    const offered = plan.split('## Shared drafts not yet in the document')[1].split('##')[0];
+    assert.match(offered, /Second draft/);
+    assert.doesNotMatch(offered, /Tool|Background|On the plan|accounting/);
+    assert.match(plan, /## Recent feedback to resolve\n- \[c_[^\]]+\] "On the plan".*about Plan draft/);
+    assert.match(plan, /## Decisions already made\n- \[c_[^\]]+\] "We start with accounting firms"/);
+    // The author or owner can refile; then it follows the new type's rules. Others cannot.
+    const refiled = await nickWeb('PATCH', `/api/contributions/${d2}`, { kind: 'reference' });
+    assert.equal(refiled.kind, 'reference');
+    assert.equal(refiled.standing, undefined);
+    await assert.rejects(nickAI.call('add_to_document', { contribution_id: d2 }), /Only drafts/);
+    await assert.rejects(nickWeb('PATCH', `/api/contributions/${d2}`, { kind: 'feedback' }), /what it is about/);
+    const inv = await nickWeb('POST', `/api/projects/${pid}/invites`, { email: 'austin@example.com', role: 'editor' });
+    await austinWeb('POST', `/api/invites/${inv.token}/accept`, {});
+    await assert.rejects(austinWeb('PATCH', `/api/contributions/${d2}`, { kind: 'draft' }), /Only its author or the project owner/);
+    await assert.rejects(austinAI.call('post_contribution', { project_id: pid, title: 'Mine now', content: 'z', kind: 'draft', replaces: d1 }), /Only its author or the project owner/);
+    // With a second reviewer, a draft in an open proposal says who it is waiting on.
+    const d3 = await post({ title: 'Third draft', kind: 'draft' });
+    await nickAI.call('add_to_document', { contribution_id: d3 });
+    const st = (await get(d3)).standing;
+    assert.equal(st.state, 'proposed');
+    assert.deepEqual(st.waiting_on, ['Austin']);
   });
 
   await step('non-members cannot see a project; refresh tokens rotate', async () => {

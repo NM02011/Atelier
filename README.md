@@ -70,6 +70,14 @@ made (`hand`, or the AI label such as `Claude`, `ChatGPT`, `Qwen3 via LibreChat`
 **Hub tools (spec 8).** `list_projects`, `get_project`, `post_contribution`, `read_contributions`,
 `propose_combined_version`, `review_version`, `get_history`, `read_comments`, `post_comment`.
 Read tools are marked read-only; write tools ask the AI to confirm with the user first.
+Contributions have a type, and each type changes what Atelier does with it: a `draft` is offered for the document and
+shows where it stands (not yet used, proposed, or in the document since a version); `feedback` names the version or
+contribution it is about; `reference` is read first by AIs and never offered for the document; `status` is a dated
+report kept out of suggestions; `decision` is a one-line choice listed on its own; `transcript` is a saved chat. An AI
+must name the type when it posts. A new contribution can name an earlier one it `replaces`: the old one stays readable,
+is marked as replaced, and drops out of what AIs are shown. The author or project owner can change a type afterwards.
+(Databases from before types existed are upgraded on start; the old `note` kind becomes `reference`.)
+
 Five tools go beyond the spec. `plan_next_steps` and `save_next_steps` keep a short list of next steps for each project
 (the Next steps tab): every write tool ends its result by asking the AI to refresh the list, each save replaces the
 list, and earlier lists are kept as history. Atelier still runs no AI; the member's own AI writes the steps. `create_project` starts a project from an AI app (the person becomes its owner).

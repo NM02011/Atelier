@@ -65,6 +65,31 @@
   const whenEl = (iso) => h('time', { datetime: iso, title: new Date(iso).toLocaleString() }, when(iso));
   const viaPill = (via) => via === 'hand' ? h('span', { class: 'pill hand', title: 'Written directly in Atelier' }, 'by hand') : h('span', { class: 'pill via', title: 'Made through this AI' }, 'via ' + via);
   const statusPill = (v, isCurrent) => isCurrent ? h('span', { class: 'pill current' }, 'current') : h('span', { class: 'pill ' + v.status }, v.status);
+  // Contribution types: what each is for, and how the Contributions tab groups them.
+  const KIND_ORDER = ['draft', 'feedback', 'reference', 'decision', 'status', 'transcript'];
+  const KIND_PICK = ['draft', 'feedback', 'reference', 'status', 'decision', 'transcript'];
+  const KIND = {
+    draft: { label: 'Draft', group: 'Drafts', help: 'Text meant for the document. Offered for adding and merging.', about: 'Text meant for the document. Each one shows where it stands.',
+      after: 'After you post, this will be listed under Drafts as “Not yet used” and offered for adding to the document.' },
+    feedback: { label: 'Feedback', group: 'Feedback', help: 'A critique of the document or of a draft. You pick what it is about.', about: 'Critiques of the document or of a draft.',
+      after: 'After you post, this will be listed under Feedback with a link to what it is about.' },
+    reference: { label: 'Reference', group: 'Reference', help: 'Background to read first: research, a spec, context. Never merged in.', about: 'Background that informs the work. Read first by AIs, never offered for the document.',
+      after: 'After you post, this will be listed under Reference. AIs are told to read it first, and it is never offered for the document.' },
+    status: { label: 'Status', group: 'Status', help: 'A dated report: test results, what you did. Kept out of suggestions.', about: 'Dated reports. Newest first, kept out of document and planning suggestions.',
+      after: 'After you post, this will be listed under Status with today’s date at the start of its title.' },
+    decision: { label: 'Decision', group: 'Decisions', help: 'A choice the group has made. Listed on its own with who and when.', about: 'Choices the group has made, each with who decided and when.',
+      after: 'After you post, this will be listed under Decisions with your name and today’s date. The title is the decision.' },
+    transcript: { label: 'Transcript', group: 'Transcripts', help: 'A saved chat or summary. Collapsed by default, never merged in.', about: 'Saved chats and summaries.',
+      after: 'After you post, this will be listed under Transcripts, collapsed. It is never offered for the document.' },
+  };
+  const kindPill = (k) => h('span', { class: 'pill kind-' + k }, KIND[k]?.label || k);
+  function standingPill(c) {
+    const s = c.standing;
+    if (!s) return null;
+    if (s.state === 'in_document') return h('span', { class: 'pill approved' }, `In the document since v${s.since_number}`);
+    if (s.state === 'proposed') return h('span', { class: 'pill proposed' }, `Proposed in v${s.number}` + (s.waiting_on.length ? `, waiting on ${s.waiting_on.join(', ')}` : ''));
+    return h('span', { class: 'pill' }, 'Not yet used');
+  }
   const byline = (name, via, iso) => h('span', { class: 'meta' }, name, viaPill(via), '·', whenEl(iso));
   const canWrite = (role) => role === 'owner' || role === 'editor';
   const canReview = (role) => role !== 'viewer';
@@ -97,6 +122,7 @@
     const { parts, params } = parseHash();
     try {
       if (parts[0] === 'p' && parts[2] === 'new') return await editorView(parts[1], params);
+      if (parts[0] === 'p' && parts[2] === 'compare') return await compareView(parts[1], params);
       if (parts[0] === 'p') return await projectView(parts[1], parts[2] || 'document', params);
       if (parts[0] === 'v') return await versionView(parts[1], params);
       if (parts[0] === 'c') return await contributionView(parts[1]);
@@ -254,19 +280,68 @@
     return out;
   }
 
+  function contribItem(c) {
+    const replaced = Boolean(c.replaced_by_id);
+    return h('a', { class: 'item' + (replaced ? ' replaced' : ''), href: '#/c/' + c.id },
+      h('div', { class: 'row between' }, h('span', { class: 'title' }, c.title),
+        h('span', { class: 'row' }, replaced ? h('span', { class: 'small muted' }, `Replaced by “${c.replaced_by_title}”`) : standingPill(c),
+          c.visibility === 'private' ? h('span', { class: 'pill private' }, 'private') : null)),
+      h('div', { class: 'meta', style: 'margin-top:4px' }, kindPill(c.kind), c.author_name, viaPill(c.via), '·', whenEl(c.created_at), c.about_id ? `· about ${c.about_label}` : null),
+      replaced ? null : h('div', { class: 'muted small', style: 'margin-top:4px' }, c.body.slice(0, 220).replace(/[#*_>`]/g, '') + (c.body.length > 220 ? '…' : '')));
+  }
   async function contribTab(p, params) {
-    const member = params.get('member') || '';
-    const list = await api('GET', `/projects/${p.id}/contributions${member ? '?member=' + encodeURIComponent(member) : ''}`);
-    const filter = h('select', { onchange: (e) => { location.hash = `#/p/${p.id}/contributions${e.target.value ? '?member=' + e.target.value : ''}`; } },
-      h('option', { value: '' }, 'Everyone'), p.members.map((m) => h('option', { value: m.id, selected: m.id === member }, m.name)));
-    return h('section', {},
-      h('div', { class: 'row between', style: 'margin-bottom:12px' }, h('div', { class: 'row' }, h('span', { class: 'muted' }, 'From'), filter),
-        h('span', { class: 'muted small' }, 'Contributions are never edited after posting. Private ones are visible only to their author.')),
-      list.length ? h('div', { class: 'list' }, list.map((c) => h('a', { class: 'item', href: '#/c/' + c.id },
-        h('div', { class: 'row between' }, h('span', { class: 'title' }, c.title), h('span', { class: 'row' }, c.kind !== 'draft' ? h('span', { class: 'pill' }, c.kind) : null, h('span', { class: 'pill ' + c.visibility }, c.visibility))),
-        byline(c.author_name, c.via, c.created_at),
-        h('div', { class: 'muted small' }, c.body.slice(0, 220).replace(/[#*_>`]/g, '') + (c.body.length > 220 ? '…' : '')))))
-        : h('div', { class: 'card empty' }, 'No contributions yet.'));
+    const all = await api('GET', `/projects/${p.id}/contributions`);
+    const f = { kind: params.get('kind') || '', member: params.get('member') || '', via: params.get('via') || '' };
+    const link = (over) => { const q = new URLSearchParams(Object.entries({ ...f, ...over }).filter(([, v]) => v)); const qs = q.toString(); return `#/p/${p.id}/contributions${qs ? '?' + qs : ''}`; };
+    const go = (over) => { location.hash = link(over); };
+    const scoped = all.filter((c) => (!f.member || c.author_id === f.member) && (!f.via || c.via === f.via));
+    const count = (k) => scoped.filter((c) => c.kind === k).length;
+    const chips = h('div', { class: 'chips' }, h('span', { class: 'muted small' }, 'Show'),
+      h('a', { class: 'chip' + (f.kind ? '' : ' on'), href: link({ kind: '' }) }, `All ${scoped.length}`),
+      KIND_ORDER.map((k) => h('a', { class: 'chip' + (f.kind === k ? ' on' : '') + (count(k) ? '' : ' none'), href: link({ kind: k }) }, `${KIND[k].group} ${count(k)}`)));
+    const vias = [...new Set(all.map((c) => c.via))];
+    const filters = h('div', { class: 'row', style: 'margin:10px 0 20px' },
+      h('span', { class: 'muted small' }, 'From'),
+      h('select', { onchange: (e) => go({ member: e.target.value }) }, h('option', { value: '' }, 'Everyone'), p.members.map((m) => h('option', { value: m.id, selected: m.id === f.member }, m.name))),
+      h('span', { class: 'muted small' }, 'Made with'),
+      h('select', { onchange: (e) => go({ via: e.target.value }) }, h('option', { value: '' }, 'Any'), vias.map((v) => h('option', { value: v, selected: v === f.via }, v === 'hand' ? 'By hand' : v))),
+      all.length > 1 ? h('a', { class: 'btn', href: `#/p/${p.id}/compare` }, 'Compare two side by side') : null);
+    const groups = (f.kind ? [f.kind] : KIND_ORDER).map((k) => {
+      const rows = scoped.filter((c) => c.kind === k);
+      if (!rows.length && !f.kind && k !== 'draft' && k !== 'decision') return null;
+      // Drafts that still need a decision come before the ones already in the document.
+      const rank = (c) => ({ unused: 0, proposed: 1, in_document: 2 }[c.standing?.state] ?? 0);
+      const live = rows.filter((c) => !c.replaced_by_id).sort((x, y) => rank(x) - rank(y)), old = rows.filter((c) => c.replaced_by_id);
+      // Status keeps its three newest in view; transcripts start folded; replaced items always go last.
+      const shown = k === 'transcript' ? [] : k === 'status' ? live.slice(0, 3) : live;
+      const folded = [...live.slice(shown.length), ...old];
+      return h('section', { class: 'group' }, h('h2', {}, KIND[k].group), h('p', { class: 'muted small' }, KIND[k].about),
+        rows.length ? null : h('div', { class: 'item muted small' }, k === 'draft' ? 'No drafts yet.' : `No ${KIND[k].group.toLowerCase()} recorded yet.`),
+        shown.length ? h('div', { class: 'list' }, shown.map(contribItem)) : null,
+        folded.length ? h('details', { style: 'margin-top:8px' }, h('summary', { class: 'small muted' }, shown.length ? `${folded.length} older or replaced` : `Show ${folded.length}`),
+          h('div', { class: 'list', style: 'margin-top:8px' }, folded.map(contribItem))) : null);
+    });
+    return h('section', {}, chips, filters,
+      all.length ? groups : h('div', { class: 'card empty' }, 'No contributions yet.'),
+      h('p', { class: 'muted small', style: 'margin-top:20px' }, 'Contributions are never edited after posting. Private ones are visible only to their author.'));
+  }
+  async function compareView(pid, params) {
+    const p = await api('GET', '/projects/' + pid);
+    const all = await api('GET', `/projects/${pid}/contributions`);
+    setCrumbs(h('a', { href: '#/' }, 'Projects'), h('a', { href: '#/p/' + pid }, p.name), h('a', { href: `#/p/${pid}/contributions` }, 'Contributions'), h('span', {}, 'Compare'));
+    const drafts = all.filter((c) => c.kind === 'draft' && !c.replaced_by_id);
+    const pool = drafts.length > 1 ? drafts : all;
+    if (pool.length < 2) return render(h('div', { class: 'card empty' }, 'There need to be at least two contributions to compare.'));
+    const ids = { a: all.some((c) => c.id === params.get('a')) ? params.get('a') : pool[1].id, b: all.some((c) => c.id === params.get('b')) ? params.get('b') : pool[0].id };
+    const column = (side) => {
+      const c = all.find((x) => x.id === ids[side]);
+      return h('div', { class: 'card' },
+        h('select', { 'aria-label': 'Contribution to show', onchange: (e) => { location.hash = `#/p/${pid}/compare?${new URLSearchParams({ ...ids, [side]: e.target.value })}`; } },
+          all.map((x) => h('option', { value: x.id, selected: x.id === c.id }, `${KIND[x.kind]?.label || x.kind}: ${x.title} (${x.author_name}${x.via === 'hand' ? '' : ' via ' + x.via})`))),
+        h('div', { class: 'row between', style: 'margin-top:12px' }, h('span', { class: 'meta' }, kindPill(c.kind), c.author_name, viaPill(c.via), '·', whenEl(c.created_at)), standingPill(c)),
+        h('h2', { style: 'margin:12px 0 0' }, h('a', { href: '#/c/' + c.id }, c.title)), h('div', { style: 'margin-top:12px' }, md(c.body)));
+    };
+    render(h('div', { class: 'compare' }, column('a'), column('b')));
   }
 
   async function historyTab(p) {
@@ -283,7 +358,7 @@
     created_project: 'created the project', invited: 'invited', joined: 'joined', posted_contribution: 'posted a contribution',
     shared_contribution: 'shared a contribution', made_private: 'made a contribution private', proposed: 'proposed', approved: 'approved',
     requested_changes: 'requested changes on', became_current: '', withdrew: 'withdrew', commented: 'commented on', replied: 'replied on',
-    changed_role: 'changed a role', removed_member: 'removed', left: 'left the project', updated_project: 'updated the project', updated_next_steps: 'updated the next steps',
+    changed_role: 'changed a role', removed_member: 'removed', left: 'left the project', updated_project: 'updated the project', updated_next_steps: 'updated the next steps', changed_type: 'changed the type of',
   };
   function targetLink(id, text) {
     if (!id) return null;
@@ -426,12 +501,33 @@
     const update = () => { preview.replaceChildren(md(body.value || '*Preview*')); try { localStorage.setItem(draftKey, body.value); } catch { /* ignore */ } };
     body.addEventListener('input', update); update();
 
+    // Contribution type: chosen first, because it decides where the post shows up and what Atelier does with it.
+    let kind = KIND[params.get('kind')] ? params.get('kind') : 'draft';
+    const autoTitle = `${state.me.name}'s draft`;
+    const afterNote = h('span', { class: 'small muted' });
+    const afterPill = h('span', {});
+    const picker = h('fieldset', { class: 'typepick' }, h('legend', {}, 'What are you adding?'),
+      h('p', { class: 'muted small', style: 'margin:0 0 10px' }, 'The type decides where it shows up and what Atelier does with it. You can change it later.'),
+      h('div', { class: 'typegrid' }, KIND_PICK.map((k) => h('label', { class: 'typeopt' },
+        h('input', { type: 'radio', name: 'kind', value: k, checked: k === kind, onchange: () => { kind = k; sync(); } }),
+        h('span', {}, h('strong', {}, KIND[k].label), h('span', { class: 'small muted' }, KIND[k].help))))),
+      h('div', { class: 'row', style: 'margin-top:12px' }, afterPill, afterNote));
+    const targets = [
+      ...(p.current_version ? [[p.current_version.id, `The current version (v${p.current_version.number})`]] : []),
+      ...p.open_proposals.map((v) => [v.id, `Proposal v${v.number}: ${v.title}`]),
+      ...contribs.filter((c) => !c.replaced_by_id).map((c) => [c.id, `${KIND[c.kind]?.label || c.kind}: ${c.title} (${c.author_name})`])];
+    const aboutField = h('label', {}, 'About which version or contribution?',
+      h('select', { name: 'about' }, h('option', { value: '' }, 'Choose…'), targets.map(([v, t]) => h('option', { value: v, selected: v === params.get('about') }, t))));
+    const replaceable = contribs.filter((c) => !c.replaced_by_id && (c.author_id === state.me.id || p.my_role === 'owner'));
+    const replacesField = replaceable.length ? h('label', {}, 'Replaces an earlier contribution (optional)',
+      h('select', { name: 'replaces' }, h('option', { value: '' }, 'None'), replaceable.map((c) => h('option', { value: c.id }, `${KIND[c.kind]?.label || c.kind}: ${c.title}`))),
+      h('span', { class: 'small muted', style: 'font-weight:400' }, 'The earlier one stays readable but is greyed out and no longer suggested.')) : null;
     const contribFields = h('div', { class: 'stack' },
       h('div', { class: 'row' }, h('strong', {}, 'Who can see it?'),
         h('label', { class: 'check' }, h('input', { type: 'radio', name: 'visibility', value: 'shared', checked: true }), 'Shared with the project'),
         h('label', { class: 'check' }, h('input', { type: 'radio', name: 'visibility', value: 'private' }), 'Private (only me)')),
       h('p', { class: 'muted small' }, 'Shared contributions can be read by members and their AIs, which sends the text to those AI providers.'),
-      h('label', {}, 'Kind', h('select', { name: 'kind' }, h('option', { value: 'draft' }, 'Draft'), h('option', { value: 'note' }, 'Note'), h('option', { value: 'transcript' }, 'Chat transcript or summary'))));
+      aboutField, replacesField);
     const proposalFields = h('div', { class: 'stack' },
       counterId ? h('p', { class: 'banner' }, `This is a counter-proposal to v${base.number}.`) : null,
       p.current_version && !counterId && fromId !== p.current_version.id ? h('p', { class: 'banner warn small' }, `Heads up: the current version is v${p.current_version.number}.`) : null,
@@ -447,7 +543,16 @@
       h('label', { class: 'check' }, h('input', { type: 'radio', name: 'mode', value: 'proposal', checked: mode === 'proposal', onchange: () => { mode = 'proposal'; sync(); } }), 'Propose as the next version'),
       h('label', { class: 'check' }, h('input', { type: 'radio', name: 'mode', value: 'contribution', checked: mode === 'contribution', onchange: () => { mode = 'contribution'; sync(); } }), 'Save as my contribution'));
     const submit = h('button', { class: 'primary' });
-    function sync() { contribFields.classList.toggle('hidden', mode !== 'contribution'); proposalFields.classList.toggle('hidden', mode !== 'proposal'); submit.textContent = mode === 'proposal' ? 'Submit for approval' : 'Save contribution'; }
+    function sync() {
+      const contrib = mode === 'contribution';
+      contribFields.classList.toggle('hidden', !contrib); picker.classList.toggle('hidden', !contrib); proposalFields.classList.toggle('hidden', contrib);
+      aboutField.classList.toggle('hidden', kind !== 'feedback');
+      afterPill.replaceChildren(kindPill(kind)); afterNote.textContent = KIND[kind].after;
+      title.placeholder = contrib && kind === 'decision' ? 'What was decided? One line.' : 'Title';
+      // The suggested title only suits a draft; clear it for other types unless the person has typed their own.
+      if (contrib && !base && (title.value === autoTitle || title.value === '')) title.value = kind === 'draft' ? autoTitle : '';
+      submit.textContent = contrib ? `Post ${KIND[kind].label.toLowerCase()}` : 'Submit for approval';
+    }
     sync();
 
     const form = h('form', { class: 'stack', onsubmit: async (e) => {
@@ -455,7 +560,7 @@
       const fd = new FormData(form);
       try {
         if (mode === 'contribution') {
-          const c = await api('POST', `/projects/${pid}/contributions`, { title: fd.get('title'), body: fd.get('body'), visibility: fd.get('visibility'), kind: fd.get('kind') });
+          const c = await api('POST', `/projects/${pid}/contributions`, { title: fd.get('title'), body: fd.get('body'), visibility: fd.get('visibility'), kind, about: kind === 'feedback' ? fd.get('about') : undefined, replaces: fd.get('replaces') || undefined });
           try { localStorage.removeItem(draftKey); } catch { /* ignore */ }
           location.hash = '#/c/' + c.id;
         } else {
@@ -466,7 +571,7 @@
         }
       } catch (ex) { fail(ex); }
     } },
-      counterId ? null : modeSel, title,
+      counterId ? null : modeSel, picker, title,
       h('div', { class: 'editor' }, body, preview),
       contribFields, proposalFields,
       h('div', { class: 'row' }, submit, h('a', { class: 'btn', href: '#/p/' + pid, onclick: () => { try { localStorage.removeItem(draftKey); } catch { /* ignore */ } } }, 'Cancel')));
@@ -660,7 +765,10 @@
     const mine = c.author_id === state.me.id;
     const doc = md(c.body);
     const main = h('div', { class: 'card' },
-      h('div', { class: 'row between' }, byline(c.author_name, c.via, c.created_at), h('span', { class: 'row' }, c.kind !== 'draft' ? h('span', { class: 'pill' }, c.kind) : null, h('span', { class: 'pill ' + c.visibility }, c.visibility))),
+      h('div', { class: 'row between' }, byline(c.author_name, c.via, c.created_at), h('span', { class: 'row' }, kindPill(c.kind), standingPill(c), h('span', { class: 'pill ' + c.visibility }, c.visibility))),
+      c.replaced_by_id ? h('p', { class: 'banner warn', style: 'margin:12px 0 0' }, 'This has been replaced by ', h('a', { href: '#/c/' + c.replaced_by_id }, c.replaced_by_title), '. It is kept for the record and no longer suggested.') : null,
+      c.replaces_id ? h('p', { class: 'muted small', style: 'margin:12px 0 0' }, 'Replaces ', h('a', { href: '#/c/' + c.replaces_id }, c.replaces_title || 'an earlier contribution'), '.') : null,
+      c.about_id ? h('p', { class: 'muted small', style: 'margin:12px 0 0' }, 'About ', h('a', { href: (c.about_id.startsWith('v_') ? '#/v/' : '#/c/') + c.about_id }, c.about_label), '.') : null,
       docTitle('h1', c.title, c.body, 'margin-top:12px'), h('div', { style: 'margin-top:12px' }, doc));
     const side = h('aside', {});
     const acts = h('div', { class: 'card stack' }, h('h2', { style: 'margin:0' }, 'Contribution'),
@@ -672,8 +780,20 @@
         try { await api('PATCH', '/contributions/' + cid, { visibility: next }); toast(`Now ${next}`); route(); } catch (e) { fail(e); }
       } }, next === 'shared' ? 'Share with project' : 'Make private'));
     }
+    if (mine || p.my_role === 'owner') {
+      // Refile under another type. The text itself never changes.
+      const typeSel = h('select', { 'aria-label': 'Type' }, KIND_PICK.map((k) => h('option', { value: k, selected: k === c.kind }, KIND[k].label)));
+      const aboutSel = h('select', { 'aria-label': 'What the feedback is about', class: 'hidden' }, h('option', { value: '' }, 'About…'),
+        p.current_version ? h('option', { value: p.current_version.id }, `The current version (v${p.current_version.number})`) : null,
+        p.open_proposals.map((v) => h('option', { value: v.id }, `Proposal v${v.number}`)));
+      const help = h('p', { class: 'muted small', style: 'margin:0' }, KIND[c.kind]?.help || '');
+      typeSel.addEventListener('change', () => { aboutSel.classList.toggle('hidden', typeSel.value !== 'feedback' || Boolean(c.about_id)); help.textContent = KIND[typeSel.value].help; });
+      acts.append(h('label', {}, 'Type', typeSel), aboutSel, help, h('button', { onclick: async () => {
+        try { await api('PATCH', '/contributions/' + cid, { kind: typeSel.value, about: aboutSel.value || undefined }); toast(`Filed as ${KIND[typeSel.value].label.toLowerCase()}`); route(); } catch (e) { fail(e); }
+      } }, 'Change type'));
+    }
     if (canWrite(p.my_role) && c.visibility === 'shared') acts.append(h('a', { class: 'btn', href: `#/p/${p.id}/new?mode=proposal&sources=${c.id}${p.current_version ? '&from=' + p.current_version.id : ''}` }, 'Use in a proposal'));
-    if (canWrite(p.my_role) && c.visibility === 'shared') {
+    if (canWrite(p.my_role) && c.visibility === 'shared' && c.kind === 'draft' && !c.replaced_by_id && c.standing?.state !== 'in_document') {
       // Mechanical add: the whole contribution goes in under the chosen heading, as a normal proposal.
       const sections = p.current_version ? await api('GET', `/projects/${p.id}/sections`) : [];
       const where = h('select', {}, h('option', { value: '' }, 'End of document'),

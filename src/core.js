@@ -156,7 +156,48 @@ export function removeMember(actor, projectId, userId) {
 
 // ---------- Contributions ----------
 
-const contribSelect = `SELECT c.*, u.name AS author_name FROM contributions c JOIN users u ON u.id = c.author_id`;
+// Contribution types. Each one changes what Atelier does with the contribution, not just its label.
+export const KINDS = {
+  draft: 'Text meant for the document. Offered for adding to the document and for merging.',
+  feedback: 'A critique of the document or of a draft. Says which version or contribution it is about.',
+  reference: 'Background to read first: research, a spec, context. Never offered for the document.',
+  status: 'A dated report: test results, what was done. Kept out of document and planning suggestions.',
+  decision: 'A choice the group has made, stated in one line as the title.',
+  transcript: 'A saved chat or summary. Never offered for the document.',
+};
+const normKind = (k) => (k === 'note' ? 'reference' : k);   // "note" was the old name
+
+const contribSelect = `SELECT c.*, u.name AS author_name,
+  (SELECT r.id FROM contributions r WHERE r.replaces_id = c.id ORDER BY r.created_at LIMIT 1) AS replaced_by_id,
+  (SELECT r.title FROM contributions r WHERE r.replaces_id = c.id ORDER BY r.created_at LIMIT 1) AS replaced_by_title
+  FROM contributions c JOIN users u ON u.id = c.author_id`;
+
+// Adds what the lists and pages show: what it replaces, what it is about, and where a draft stands.
+function decorateContribution(c, project) {
+  const out = { ...c };
+  if (c.replaces_id) out.replaces_title = one('SELECT title FROM contributions WHERE id = ?', c.replaces_id)?.title ?? null;
+  if (c.about_id) {
+    out.about_label = c.about_id.startsWith('v_')
+      ? `v${one('SELECT number FROM versions WHERE id = ?', c.about_id)?.number ?? '?'}`
+      : one('SELECT title FROM contributions WHERE id = ?', c.about_id)?.title ?? 'a contribution';
+  }
+  if (c.kind === 'draft') {
+    project ||= one('SELECT * FROM projects WHERE id = ?', c.project_id);
+    const inCurrent = project.current_version_id && one('SELECT 1 AS x FROM version_sources WHERE version_id = ? AND contribution_id = ?', project.current_version_id, c.id);
+    if (inCurrent) {
+      const since = one(`SELECT MIN(v.number) AS n FROM version_sources s JOIN versions v ON v.id = s.version_id
+        WHERE s.contribution_id = ? AND v.status IN ('approved','replaced')`, c.id).n;
+      out.standing = { state: 'in_document', since_number: since };
+    } else {
+      const open = one(`SELECT v.* FROM version_sources s JOIN versions v ON v.id = s.version_id
+        WHERE s.contribution_id = ? AND v.status = 'proposed' ORDER BY v.number DESC LIMIT 1`, c.id);
+      out.standing = open
+        ? { state: 'proposed', version_id: open.id, number: open.number, waiting_on: approvalState(project, open).waiting_on }
+        : { state: 'unused' };
+    }
+  }
+  return out;
+}
 
 function visibleContribution(actor, contributionId) {
   const c = one(`${contribSelect} WHERE c.id = ?`, contributionId);
@@ -165,18 +206,58 @@ function visibleContribution(actor, contributionId) {
   return c;
 }
 
-export function postContribution(actor, projectId, { title, body, visibility = 'shared', kind = 'draft' }) {
-  requireRole(projectId, actor, 'write');
+// Type-specific rules, shared by posting and by changing a contribution's type.
+function checkKind(actor, projectId, kind, { title, about }) {
+  if (!Object.hasOwn(KINDS, kind)) throw bad(`Choose a type: ${Object.keys(KINDS).join(', ')}.`);
+  if (kind === 'feedback') {
+    if (!about) throw bad('Feedback needs to say what it is about: give the id of a version (v_...) or a contribution (c_...).');
+    if (targetProject(actor, about) !== projectId) throw bad('Feedback can only be about a version or contribution in the same project.');
+  }
+  if (kind === 'decision') {
+    if (!title) throw bad('A decision needs a title that states, in one line, what was decided.');
+    if (title.length > 200) throw bad('State the decision in one line (200 characters or fewer) as the title. Put the reasoning in the text.');
+  }
+}
+
+export function postContribution(actor, projectId, { title, body, visibility = 'shared', kind = 'draft', about, replaces }) {
+  const { role } = requireRole(projectId, actor, 'write');
   body = (body || '').trim();
   if (!body) throw bad('The contribution is empty.');
   if (!['private', 'shared'].includes(visibility)) throw bad('visibility must be "private" or "shared".');
-  if (!['draft', 'note', 'transcript'].includes(kind)) throw bad('kind must be draft, note or transcript.');
-  title = (title || '').trim() || body.split('\n')[0].replace(/^#+\s*/, '').slice(0, 80) || 'Untitled';
+  kind = normKind(kind);
+  title = (title || '').trim();
+  about = (about || '').trim() || null;
+  replaces = (replaces || '').trim() || null;
+  checkKind(actor, projectId, kind, { title, about });
+  title ||= body.split('\n')[0].replace(/^#+\s*/, '').slice(0, 80) || 'Untitled';
+  // A status is a dated report, so its title always starts with the day it was posted.
+  if (kind === 'status' && !/^\d{4}-\d{2}-\d{2}\b/.test(title)) title = `${now().slice(0, 10)}: ${title}`;
+  if (replaces) {
+    const old = visibleContribution(actor, replaces);
+    if (old.project_id !== projectId) throw bad('A contribution can only replace one in the same project.');
+    if (old.author_id !== actor.userId && role !== 'owner') throw forbidden('Only its author or the project owner can replace a contribution.');
+    if (old.replaced_by_id) throw bad(`"${old.title}" has already been replaced by "${old.replaced_by_title}". Replace that one instead.`);
+    if (old.visibility === 'shared' && visibility !== 'shared') throw bad('A shared contribution can only be replaced by a shared one, so members can see what replaced it.');
+  }
   const cid = id('c');
-  run('INSERT INTO contributions (id, project_id, author_id, title, body, kind, visibility, via, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    cid, projectId, actor.userId, title, body, kind, visibility, actor.via, now());
-  log(projectId, actor, 'posted_contribution', cid, `${title} (${visibility})`);
-  return one(`${contribSelect} WHERE c.id = ?`, cid);
+  run('INSERT INTO contributions (id, project_id, author_id, title, body, kind, visibility, via, created_at, about_id, replaces_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    cid, projectId, actor.userId, title, body, kind, visibility, actor.via, now(), kind === 'feedback' ? about : null, replaces);
+  log(projectId, actor, 'posted_contribution', cid, `${title} (${kind}, ${visibility})`);
+  return getContribution(actor, cid);
+}
+
+// The author or the project owner can refile a contribution under another type. Its text never changes.
+export function setContributionKind(actor, contributionId, kind, { about } = {}) {
+  const c = visibleContribution(actor, contributionId);
+  const { role } = requireRole(c.project_id, actor);
+  if (c.author_id !== actor.userId && role !== 'owner') throw forbidden('Only its author or the project owner can change a contribution\'s type.');
+  kind = normKind(kind);
+  about = (about || '').trim() || c.about_id || null;
+  checkKind(actor, c.project_id, kind, { title: c.title, about });
+  if (kind === c.kind) return getContribution(actor, contributionId);
+  run('UPDATE contributions SET kind = ?, about_id = ? WHERE id = ?', kind, kind === 'feedback' ? about : null, contributionId);
+  log(c.project_id, actor, 'changed_type', contributionId, `${c.title} (${c.kind} to ${kind})`);
+  return getContribution(actor, contributionId);
 }
 
 export function listContributions(actor, projectId, { member, includeMine = true, limit = 100 } = {}) {
@@ -189,11 +270,12 @@ export function listContributions(actor, projectId, { member, includeMine = true
       one('SELECT email FROM users WHERE id = ?', r.author_id).email.toLowerCase() === m);
   }
   if (!includeMine) rows = rows.filter((r) => r.author_id !== actor.userId);
-  return rows;
+  const project = one('SELECT * FROM projects WHERE id = ?', projectId);
+  return rows.map((r) => decorateContribution(r, project));
 }
 
 export function getContribution(actor, contributionId) {
-  return visibleContribution(actor, contributionId);
+  return decorateContribution(visibleContribution(actor, contributionId));
 }
 
 export function setContributionVisibility(actor, contributionId, visibility) {
@@ -207,7 +289,7 @@ export function setContributionVisibility(actor, contributionId, visibility) {
   }
   run('UPDATE contributions SET visibility = ? WHERE id = ?', visibility, contributionId);
   log(c.project_id, actor, visibility === 'shared' ? 'shared_contribution' : 'made_private', contributionId, c.title);
-  return visibleContribution(actor, contributionId);
+  return getContribution(actor, contributionId);
 }
 
 // ---------- Versions, proposals and review ----------
@@ -440,6 +522,8 @@ export function documentSections(actor, projectId) {
 export function addToDocument(actor, contributionId, { section, sectionIndex } = {}) {
   const c = visibleContribution(actor, contributionId);
   const { project } = requireRole(c.project_id, actor, 'write');
+  if (c.kind !== 'draft') throw bad(`Only drafts can be added to the document, and "${c.title}" is filed as ${c.kind}. Its author or the project owner can change its type to draft.`);
+  if (c.replaced_by_id) throw bad(`"${c.title}" has been replaced by "${c.replaced_by_title}". Add that one instead.`);
   if (c.visibility !== 'shared') throw bad('Share this contribution with the project before adding it to the document.');
   const current = project.current_version_id ? versionRow(project.current_version_id) : null;
   if (!current) {
@@ -551,12 +635,13 @@ export function saveNextSteps(actor, projectId, body) {
   return listNextSteps(actor, projectId).current;
 }
 
-// Shared contributions that the current version was not built from: candidates for "add this" steps.
+// Shared drafts that the current version was not built from: candidates for "add this" steps.
+// Other types, and drafts that have been replaced, are never suggested for the document.
 export function unusedContributions(actor, projectId) {
   const { project } = requireRole(projectId, actor);
   const used = new Set(project.current_version_id
     ? all('SELECT contribution_id FROM version_sources WHERE version_id = ?', project.current_version_id).map((r) => r.contribution_id) : []);
-  return listContributions(actor, projectId).filter((c) => c.visibility === 'shared' && !used.has(c.id));
+  return listContributions(actor, projectId).filter((c) => c.kind === 'draft' && !c.replaced_by_id && c.visibility === 'shared' && !used.has(c.id));
 }
 
 // ---------- Activity ----------
