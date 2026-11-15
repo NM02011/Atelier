@@ -93,7 +93,7 @@
   const byline = (name, via, iso) => h('span', { class: 'meta' }, name, viaPill(via), '·', whenEl(iso));
   const canWrite = (role) => role === 'owner' || role === 'editor';
   const canReview = (role) => role !== 'viewer';
-  const originLabel = (v) => ({ merge: 'combined version', counter: `counter-proposal to v${v.counter_to_number}`, restore: `restore of v${v.restored_from_number}`, add: 'added contribution', edit: 'edit' }[v.origin] || 'edit');
+  const originLabel = (v) => ({ merge: 'combined version', counter: `counter-proposal to v${v.counter_to_number}`, restore: `restore of v${v.restored_from_number}`, add: 'added contribution', update: `v${v.counter_to_number} brought up to date`, edit: 'edit' }[v.origin] || 'edit');
 
   function setCrumbs(...parts) {
     const c = document.getElementById('crumbs');
@@ -250,7 +250,7 @@
       a ? h('div', { class: 'meta' }, a.approved_by.length ? `Approved by ${a.approved_by.join(', ')}` : 'No approvals yet',
         a.changes_requested_by.length ? h('span', { class: 'error' }, `· Changes requested by ${a.changes_requested_by.join(', ')}`) : null,
         a.waiting_on.length ? `· Waiting on ${a.waiting_on.join(', ')}` : null,
-        v.stale ? h('span', { class: 'pill' }, `based on v${v.base_number}`) : null) : null);
+        v.stale ? h('span', { class: 'pill proposed', title: `Written against ${v.base_number ? 'v' + v.base_number : 'an empty document'}; the document has changed since` }, 'out of date') : null) : null);
   }
 
   function docTab(p) {
@@ -360,7 +360,7 @@
     created_project: 'created the project', invited: 'invited', joined: 'joined', posted_contribution: 'posted a contribution',
     shared_contribution: 'shared a contribution', made_private: 'made a contribution private', proposed: 'proposed', approved: 'approved',
     requested_changes: 'requested changes on', became_current: '', withdrew: 'withdrew', commented: 'commented on', replied: 'replied on',
-    changed_role: 'changed a role', removed_member: 'removed', left: 'left the project', updated_project: 'updated the project', updated_next_steps: 'updated the next steps', changed_type: 'changed the type of',
+    changed_role: 'changed a role', removed_member: 'removed', left: 'left the project', updated_project: 'updated the project', updated_next_steps: 'updated the next steps', brought_up_to_date: 'caused an automatic update of', changed_type: 'changed the type of',
   };
   function targetLink(id, text) {
     if (!id) return null;
@@ -532,7 +532,10 @@
       h('p', { class: 'muted small' }, 'Shared contributions can be read by members and their AIs, which sends the text to those AI providers.'),
       aboutField, replacesField);
     const proposalFields = h('div', { class: 'stack' },
-      counterId ? h('p', { class: 'banner' }, `This is a counter-proposal to v${base.number}.`) : null,
+      counterId && base.stale && base.author_id === state.me.id ? h('p', { class: 'banner warn' }, h('strong', {}, `Bringing v${base.number} up to date. `),
+        `The text below is your proposal as written against ${base.base_number ? 'v' + base.base_number : 'an empty document'}. The document is now v${p.current_version.number}. Work in what changed there before you submit, or those changes will be removed. `,
+        h('a', { href: '#/v/' + p.current_version.id, target: '_blank' }, `See what changed in v${p.current_version.number}`), '. Submitting replaces your earlier proposal.')
+        : counterId ? h('p', { class: 'banner' }, `This is a counter-proposal to v${base.number}.`) : null,
       p.current_version && !counterId && fromId !== p.current_version.id ? h('p', { class: 'banner warn small' }, `Heads up: the current version is v${p.current_version.number}.`) : null,
       h('label', {}, 'What changed? (shown to reviewers)', h('input', { name: 'summary', placeholder: 'e.g. Merged Nick\'s budget section into my outline' })),
       contribs.length ? h('fieldset', { style: 'border:1px solid var(--border);border-radius:8px;padding:10px' },
@@ -711,7 +714,7 @@
     const main = h('section', {},
       h('div', { class: 'card' },
         h('div', { class: 'row between' }, h('div', { class: 'meta' }, statusPill(v, v.is_current), `v${v.number}`, '·', originLabel(v), '·', byline(v.author_name, v.via, v.created_at)),
-          v.stale ? h('span', { class: 'pill', title: 'The current version changed after this was proposed' }, `based on v${v.base_number}`) : null),
+          v.stale ? h('span', { class: 'pill proposed', title: 'The document changed after this was proposed' }, 'out of date') : null),
         v.summary ? h('p', { class: 'banner small', style: 'margin-top:12px' }, v.summary) : null,
         docTitle('h1', v.title, v.body, 'margin-top:12px'), h('div', { style: 'margin-top:12px' }, doc),
         v.sources.length ? h('div', { class: 'meta', style: 'margin-top:16px;border-top:1px solid var(--border);padding-top:10px' }, 'Built from:',
@@ -736,11 +739,19 @@
             route();
           } catch (e) { fail(e); }
         };
-        panel.append(note, h('div', { class: 'row' }, h('button', { class: 'ok', onclick: () => doReview('approve') }, 'Approve'), h('button', { onclick: () => doReview('request_changes') }, 'Request changes')));
+        // An out-of-date proposal cannot be approved: its text is missing what changed in the document since.
+        panel.append(note, h('div', { class: 'row' }, v.stale ? null : h('button', { class: 'ok', onclick: () => doReview('approve') }, 'Approve'), h('button', { onclick: () => doReview('request_changes') }, 'Request changes')));
       } else if (mine) panel.append(h('p', { class: 'muted small' }, 'This is your proposal. The other members review it.'));
+      if (v.stale) {
+        const was = v.base_number ? `v${v.base_number}` : 'an empty document';
+        panel.prepend(h('p', { class: 'banner warn small', style: 'margin:0' }, h('strong', {}, 'Out of date. '),
+          `This was written against ${was}, and the document is now v${p.current_version.number}. Approving it would remove what changed in between, so it cannot be approved until `,
+          mine ? 'you bring it up to date.' : `${v.author_name} brings it up to date.`, ' ',
+          h('a', { href: '#/v/' + p.current_version.id }, `See what changed in v${p.current_version.number}`), '.'));
+      }
       const acts = h('div', { class: 'row' });
       if (canWrite(role) && !mine) acts.append(h('a', { class: 'btn', href: `#/p/${p.id}/new?mode=proposal&counter=${v.id}` }, 'Counter-propose'));
-      if (mine) acts.append(h('a', { class: 'btn', href: `#/p/${p.id}/new?mode=proposal&counter=${v.id}` }, 'Revise'),
+      if (mine) acts.append(h('a', { class: 'btn' + (v.stale ? ' primary' : ''), href: `#/p/${p.id}/new?mode=proposal&counter=${v.id}` }, v.stale ? 'Bring up to date' : 'Revise'),
         h('button', { class: 'danger', onclick: async () => { if (!confirm('Withdraw this proposal?')) return; try { await api('POST', `/versions/${vid}/withdraw`); route(); } catch (e) { fail(e); } } }, 'Withdraw'));
       panel.append(acts);
       side.append(panel);

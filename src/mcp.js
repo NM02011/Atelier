@@ -39,13 +39,14 @@ function versionLine(v) {
   if (v.origin === 'merge') bits.push(`combined from ${v.sources.length} contribution(s)`);
   if (v.origin === 'counter') bits.push(`counter-proposal to v${v.counter_to_number}`);
   if (v.origin === 'add') bits.push('adds one contribution to the document, nothing else changed');
+  if (v.origin === 'update') bits.push(`brings v${v.counter_to_number} up to date with the current version`);
   if (v.origin === 'restore') bits.push(`restores v${v.restored_from_number}`);
   if (v.summary) bits.push(`summary: ${v.summary}`);
   if (v.approval) {
     bits.push(`approved by: ${v.approval.approved_by.join(', ') || 'nobody yet'}`);
     if (v.approval.changes_requested_by.length) bits.push(`changes requested by: ${v.approval.changes_requested_by.join(', ')}`);
     if (v.approval.waiting_on.length) bits.push(`waiting on: ${v.approval.waiting_on.join(', ')}`);
-    if (v.stale) bits.push(`note: based on v${v.base_number}, but the current version has changed since`);
+    if (v.stale) bits.push(`OUT OF DATE: written against ${v.base_number ? `v${v.base_number}` : 'an empty document'}, and the document has changed since; it cannot be approved until its author brings it up to date`);
   }
   return bits.join('; ');
 }
@@ -199,7 +200,7 @@ export function buildMcpServer() {
       content: z.string().describe('The full proposed document, in Markdown'),
       contribution_ids: z.array(z.string()).default([]).describe('Ids (c_...) of the contributions this version was built from'),
       summary: z.string().default('').describe('One or two sentences on what was combined or changed'),
-      counter_to: z.string().optional().describe('If this answers an open proposal, its version id (v_...)'),
+      counter_to: z.string().optional().describe('If this answers an open proposal, its version id (v_...). Use this to bring the user\'s own out-of-date proposal up to date: start from the current version, redo the change, and name the old proposal here; it is then replaced.'),
     },
     annotations: WRITE,
   }, wrap(async ({ project_id, title, content, contribution_ids, summary, counter_to }, actor) => {
@@ -225,7 +226,7 @@ export function buildMcpServer() {
 
   server.registerTool('review_version', {
     title: 'Review proposal',
-    description: 'Approve a proposed version, or request changes with a comment saying what should change. You cannot review your own proposal.' + CONFIRM,
+    description: 'Approve a proposed version, or request changes with a comment saying what should change. You cannot review your own proposal. A proposal that is out of date (the document changed after it was written) cannot be approved until its author brings it up to date.' + CONFIRM,
     inputSchema: {
       version_id: z.string().describe('The proposal id (v_...)'),
       decision: z.enum(['approve', 'request_changes']),

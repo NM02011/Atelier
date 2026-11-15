@@ -72,11 +72,13 @@ CREATE TABLE IF NOT EXISTS versions (
   summary TEXT NOT NULL DEFAULT '',
   author_id TEXT NOT NULL REFERENCES users(id),
   via TEXT NOT NULL,
-  origin TEXT NOT NULL DEFAULT 'edit',         -- edit | merge | counter | restore
+  origin TEXT NOT NULL DEFAULT 'edit',         -- edit | merge | counter | restore | add | update
   status TEXT NOT NULL CHECK (status IN ('proposed','approved','replaced','withdrawn')),
   base_version_id TEXT,                        -- the current version when this was proposed
   counter_to_id TEXT,                          -- proposal this answers, if a counter-proposal
   restored_from_id TEXT,
+  add_contribution_id TEXT,                    -- origin 'add': the contribution being added, so the proposal can be redone on a newer version
+  add_section TEXT,                            -- origin 'add': the heading it goes under (null = end of document)
   created_at TEXT NOT NULL,
   decided_at TEXT,
   UNIQUE (project_id, number)
@@ -171,7 +173,10 @@ CREATE INDEX IF NOT EXISTS idx_reviews_version ON reviews(version_id, created_at
   const cols = db.prepare('PRAGMA table_info(contributions)').all().map((c) => c.name);
   if (!cols.includes('about_id')) db.exec('ALTER TABLE contributions ADD COLUMN about_id TEXT');
   if (!cols.includes('replaces_id')) db.exec('ALTER TABLE contributions ADD COLUMN replaces_id TEXT');
-  db.exec("UPDATE contributions SET kind = 'reference' WHERE kind = 'note'");   // "note" became "reference"
+  db.exec("UPDATE contributions SET kind = 'reference' WHERE kind = 'note'");
+  const vcols = db.prepare('PRAGMA table_info(versions)').all().map((c) => c.name);
+  if (!vcols.includes('add_contribution_id')) db.exec('ALTER TABLE versions ADD COLUMN add_contribution_id TEXT');
+  if (!vcols.includes('add_section')) db.exec('ALTER TABLE versions ADD COLUMN add_section TEXT');   // "note" became "reference"
 }
 
 export const now = () => new Date().toISOString();

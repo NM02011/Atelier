@@ -360,6 +360,59 @@ try {
     assert.deepEqual(st.waiting_on, ['Austin']);
   });
 
+  await step('out-of-date proposals cannot be approved; adds are redone, edits need their author', async () => {
+    const pid = (await nickAI.call('create_project', { name: 'Stale test' })).match(/\[(p_[^\]]+)\]/)[1];
+    const web = (who) => (m, path, body) => who(m, path, body);
+    const propose = (who, body, extra = {}) => who('POST', `/api/projects/${pid}/versions`, { title: 'Doc', body, ...extra });
+    const reviewV = (who, v, decision = 'approve', comment = '') => who('POST', `/api/versions/${v.id}/review`, { decision, comment });
+    const v1 = await propose(nickWeb, '# Doc\n\n## Plan\n\nOriginal.');           // Nick is alone: current at once
+    assert.equal(v1.status, 'approved');
+    const inv = await nickWeb('POST', `/api/projects/${pid}/invites`, { email: 'austin@example.com', role: 'editor' });
+    await austinWeb('POST', `/api/invites/${inv.token}/accept`, {});
+    // Two edits written against v1. Nick's is approved first.
+    const a = await propose(nickWeb, '# Doc\n\n## Plan\n\nOriginal.\n\nChange A.');
+    const b = await propose(austinWeb, '# Doc\n\n## Plan\n\nOriginal.\n\nChange B.');
+    assert.equal((await reviewV(austinWeb, a)).became_current, true);
+    // Austin's is now out of date: it cannot be approved, by web or by AI, and it does not overwrite Change A.
+    assert.equal((await nickWeb('GET', `/api/versions/${b.id}`)).stale, true);
+    await assert.rejects(reviewV(nickWeb, b), /out of date and cannot be approved.*written against v1.*now v2.*Austin/s);
+    await assert.rejects(nickAI.call('review_version', { version_id: b.id, decision: 'approve' }), /out of date and cannot be approved/);
+    assert.match(await nickAI.call('get_project', { project_id: pid }), /OUT OF DATE: written against v1/);
+    assert.match((await nickWeb('GET', `/api/projects/${pid}`)).current_version.body, /Change A\./);
+    await reviewV(nickWeb, b, 'request_changes', 'Please update to v2.');           // still allowed
+    // Austin brings it up to date: a new proposal on v2 that replaces the old one. It needs approval like any other.
+    const b2 = await propose(austinWeb, '# Doc\n\n## Plan\n\nOriginal.\n\nChange A.\n\nChange B.', { counter_to: b.id });
+    assert.equal(b2.origin, 'update');
+    assert.equal(b2.stale, false);
+    assert.equal((await nickWeb('GET', `/api/versions/${b.id}`)).status, 'replaced');
+    assert.equal((await reviewV(nickWeb, b2)).became_current, true);
+    const now3 = (await nickWeb('GET', `/api/projects/${pid}`)).current_version;
+    assert.match(now3.body, /Change A\.\n\nChange B\./, 'both changes survive');
+    // "Add to document" proposals are redone on the new version and keep their approvals.
+    const post = (title, text) => nickWeb('POST', `/api/projects/${pid}/contributions`, { title, body: text, kind: 'draft', visibility: 'shared' });
+    const c1 = await post('Risks', 'Risk one.'), c2 = await post('Budget', 'Ten dollars.');
+    const add1 = await nickWeb('POST', `/api/contributions/${c1.id}/add-to-document`, { section_index: 1 });
+    const add2 = await nickWeb('POST', `/api/contributions/${c2.id}/add-to-document`, {});
+    assert.equal((await reviewV(austinWeb, add1)).became_current, true);
+    const redone = await nickWeb('GET', `/api/versions/${add2.id}`);
+    assert.equal(redone.stale, false, 'redone automatically');
+    assert.match(redone.body, /### Risks\n\nRisk one\.[^]*## Budget\n\nTen dollars\.$/, 'contains the other add and its own');
+    assert.deepEqual(redone.sources.map((s) => s.id), [c1.id, c2.id]);
+    assert.equal((await reviewV(austinWeb, add2)).became_current, true);
+    const log = (await nickWeb('GET', `/api/projects/${pid}/activity`)).map((x) => x.action);
+    assert.ok(log.includes('brought_up_to_date'));
+    // A proposal that every reviewer already approved does not slip through when it goes out of date.
+    const inv2 = await nickWeb('POST', `/api/projects/${pid}/invites`, { email: 'client@example.com', role: 'commenter' });
+    await clientWeb('POST', `/api/invites/${inv2.token}/accept`, {});
+    const x = await propose(nickWeb, 'X only.'), y = await propose(nickWeb, 'Y only.');
+    await reviewV(austinWeb, x); await reviewV(austinWeb, y);                      // both wait only on the client
+    const client = (await nickWeb('GET', `/api/projects/${pid}`)).members.find((mm) => mm.name === 'Client');
+    await nickWeb('DELETE', `/api/projects/${pid}/members/${client.id}`, {});         // removing them satisfies both at once
+    const after = await nickWeb('GET', `/api/projects/${pid}`);
+    assert.equal(after.current_version.id, x.id, 'the first becomes current');
+    assert.deepEqual(after.open_proposals.map((v) => [v.id, v.stale]), [[y.id, true]], 'the second is held as out of date');
+  });
+
   await step('non-members cannot see a project; refresh tokens rotate', async () => {
     const outsider = webClient();
     await outsider('POST', '/api/signup', { email: 'x@example.com', name: 'X', password: 'password000' });

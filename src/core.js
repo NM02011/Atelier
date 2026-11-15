@@ -378,7 +378,7 @@ export function getVersion(actor, versionId) {
   return { ...decorateVersion(v, project, actor), my_role: role, is_current: project.current_version_id === v.id };
 }
 
-export function propose(actor, projectId, { title, body, summary = '', contributionIds = [], counterTo, origin, restoredFrom }) {
+export function propose(actor, projectId, { title, body, summary = '', contributionIds = [], counterTo, origin, restoredFrom, add }) {
   const { project } = requireRole(projectId, actor, 'write');
   body = (body || '').trim();
   if (!body) throw bad('The proposed document is empty.');
@@ -389,31 +389,40 @@ export function propose(actor, projectId, { title, body, summary = '', contribut
       throw bad(`Contribution ${cid} is not a shared contribution in this project.`);
     }
   }
+  let updating = null;
   if (counterTo) {
     const ct = one('SELECT * FROM versions WHERE id = ? AND project_id = ?', counterTo, projectId);
     if (!ct) throw bad(`Version ${counterTo} is not in this project.`);
+    // An author answering their own out-of-date proposal is bringing it up to date: the old one is settled now.
+    if (ct.author_id === actor.userId && ct.status === 'proposed' && isStale(project, ct)) updating = ct;
   }
-  origin = origin || (counterTo ? 'counter' : ids.length > 1 ? 'merge' : 'edit');
+  origin = origin || (updating ? 'update' : counterTo ? 'counter' : ids.length > 1 ? 'merge' : 'edit');
   const vid = id('v');
   tx(() => {
     const number = (one('SELECT MAX(number) AS n FROM versions WHERE project_id = ?', projectId).n || 0) + 1;
     title = (title || '').trim() || (project.current_version_id ? versionRow(project.current_version_id).title : project.name);
-    run(`INSERT INTO versions (id, project_id, number, title, body, summary, author_id, via, origin, status, base_version_id, counter_to_id, restored_from_id, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,'proposed',?,?,?,?)`,
+    run(`INSERT INTO versions (id, project_id, number, title, body, summary, author_id, via, origin, status, base_version_id, counter_to_id, restored_from_id, add_contribution_id, add_section, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,'proposed',?,?,?,?,?,?)`,
       vid, projectId, number, title, body, (summary || '').trim(), actor.userId, actor.via, origin,
-      project.current_version_id, counterTo || null, restoredFrom || null, now());
+      project.current_version_id, counterTo || null, restoredFrom || null, add?.contributionId ?? null, add?.section ?? null, now());
+    if (updating) run(`UPDATE versions SET status = 'replaced', decided_at = ? WHERE id = ?`, now(), updating.id);
     for (const cid of ids) run('INSERT INTO version_sources (version_id, contribution_id) VALUES (?,?)', vid, cid);
-    const label = { edit: 'an edit', merge: `a combined version of ${ids.length} contributions`, counter: 'a counter-proposal', restore: 'a restore of an earlier version', add: 'adding one contribution to the document' }[origin];
+    const label = { edit: 'an edit', merge: `a combined version of ${ids.length} contributions`, counter: 'a counter-proposal', restore: 'a restore of an earlier version', add: 'adding one contribution to the document', update: `an update of v${updating?.number}, which was out of date` }[origin];
     log(projectId, actor, 'proposed', vid, `v${number}, ${label}`);
     maybeApprove(project, vid, actor);
   });
   return getVersion(actor, vid);
 }
 
+// A proposal is out of date when the document has changed since it was written. Its text does not contain
+// those changes, so approving it would remove them. It has to be brought up to date first.
+const isStale = (project, v) => Boolean(project.current_version_id) && v.base_version_id !== project.current_version_id;
+
 function maybeApprove(project, versionId, actor) {
   project = one('SELECT * FROM projects WHERE id = ?', project.id);
   const v = versionRow(versionId);
   if (v.status !== 'proposed') return false;
+  if (isStale(project, v)) return false;
   if (!approvalState(project, v).satisfied) return false;
   if (project.current_version_id) {
     run(`UPDATE versions SET status = 'replaced', decided_at = ? WHERE id = ?`, now(), project.current_version_id);
@@ -425,7 +434,26 @@ function maybeApprove(project, versionId, actor) {
   }
   run('UPDATE projects SET current_version_id = ? WHERE id = ?', versionId, project.id);
   log(project.id, actor, 'became_current', versionId, `v${v.number} is now the current version`);
+  redoOpenAdds(project.id, v, actor);
   return true;
+}
+
+// "Add this contribution under this heading" proposals can be redone mechanically on the new current
+// version, so they stay approvable and keep their approvals: what reviewers agreed to has not changed.
+// Hand edits and merges cannot be redone without judgement; those stay out of date until their author updates them.
+function redoOpenAdds(projectId, current, actor) {
+  const currentSources = all('SELECT contribution_id FROM version_sources WHERE version_id = ?', current.id).map((r) => r.contribution_id);
+  const open = all(`SELECT * FROM versions WHERE project_id = ? AND status = 'proposed' AND origin = 'add' AND add_contribution_id IS NOT NULL ORDER BY number`, projectId);
+  for (const v of open) {
+    const contribution = one(`${contribSelect} WHERE c.id = ?`, v.add_contribution_id);
+    if (!contribution || currentSources.includes(contribution.id)) continue;      // gone, or already in the document
+    let built;
+    try { built = buildAdd(current, contribution, { section: v.add_section }); } catch { continue; }   // its heading no longer exists
+    run('UPDATE versions SET body = ?, title = ?, base_version_id = ? WHERE id = ?', built.body, current.title, current.id, v.id);
+    run('DELETE FROM version_sources WHERE version_id = ?', v.id);
+    for (const cid of [...currentSources, contribution.id]) run('INSERT INTO version_sources (version_id, contribution_id) VALUES (?,?)', v.id, cid);
+    log(projectId, actor, 'brought_up_to_date', v.id, `v${v.number}, redone automatically on v${current.number}`);
+  }
 }
 
 function reevaluateOpenProposals(projectId, actor) {
@@ -443,6 +471,11 @@ export function review(actor, versionId, { decision, comment = '' }) {
   if (v.status !== 'proposed') throw bad(`v${v.number} is ${v.status}, not an open proposal.`);
   if (v.author_id === actor.userId) throw bad('You cannot review your own proposal. Other members review it.');
   if (decision === 'request_changes' && !comment.trim()) throw bad('Say what should change when requesting changes.');
+  if (decision === 'approve' && isStale(project, v)) {
+    const base = v.base_version_id ? `v${versionRow(v.base_version_id).number}` : 'an empty document';
+    throw bad(`v${v.number} is out of date and cannot be approved. It was written against ${base}, and the current version is now v${versionRow(project.current_version_id).number}. ` +
+      `Approving it would remove what changed in between. Its author, ${userName(v.author_id)}, needs to bring it up to date by proposing it again on the current version (a counter-proposal to ${v.id}). You can still request changes.`);
+  }
   let became = false;
   tx(() => {
     let commentId = null;
@@ -511,6 +544,32 @@ function fitUnder(title, body, level) {
   return (opensWithHeading ? '' : `${'#'.repeat(level)} ${title}\n\n`) + lines.join('\n').trim();
 }
 
+// The document text with one contribution inserted at the end of a section (or of the document).
+function buildAdd(current, c, { section, sectionIndex } = {}) {
+  const hs = headings(current.body), lines = current.body.split('\n');
+  const norm = (s) => String(s).trim().replace(/\s+/g, ' ').toLowerCase();
+  let target = null;
+  if (sectionIndex !== undefined && sectionIndex !== null && sectionIndex !== '') {
+    target = hs[Number(sectionIndex)];
+    if (!target) throw bad('That section is not in the current version any more. Reload and pick again.');
+  } else if (section && norm(section)) {
+    target = hs.find((x) => norm(x.title) === norm(section));
+    if (!target) throw bad(`The current version has no section titled "${section}". Its sections: ${hs.map((x) => `"${x.title}"`).join(', ') || '(none)'}. Leave section out to add at the end.`);
+  }
+  let at = lines.length, level = 2;
+  if (target) {
+    const next = hs.find((x) => x.line > target.line && x.level <= target.level);
+    at = next ? next.line : lines.length;
+    level = Math.min(target.level + 1, 6);
+    // Stay above a divider line that closes the section, so it keeps separating the sections.
+    const rule = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+    while (at > target.line + 1 && (!lines[at - 1].trim() || (rule.test(lines[at - 1]) && !(lines[at - 2] || '').trim()))) at--;
+  }
+  const body = [lines.slice(0, at).join('\n').trimEnd(), fitUnder(c.title, c.body, level), lines.slice(at).join('\n').trimStart()]
+    .filter(Boolean).join('\n\n');
+  return { body, target };
+}
+
 export function documentSections(actor, projectId) {
   const { project } = requireRole(projectId, actor);
   if (!project.current_version_id) return [];
@@ -527,36 +586,16 @@ export function addToDocument(actor, contributionId, { section, sectionIndex } =
   if (c.visibility !== 'shared') throw bad('Share this contribution with the project before adding it to the document.');
   const current = project.current_version_id ? versionRow(project.current_version_id) : null;
   if (!current) {
-    return propose(actor, c.project_id, { title: c.title, body: c.body, origin: 'add', contributionIds: [c.id],
+    return propose(actor, c.project_id, { title: c.title, body: c.body, origin: 'add', contributionIds: [c.id], add: { contributionId: c.id, section: null },
       summary: `Starts the document from "${c.title}" by ${c.author_name}.` });
   }
   const sources = all('SELECT contribution_id FROM version_sources WHERE version_id = ?', current.id).map((r) => r.contribution_id);
   if (sources.includes(c.id)) throw bad(`"${c.title}" is already one of the contributions the current version (v${current.number}) was built from.`);
 
-  const hs = headings(current.body), lines = current.body.split('\n');
-  const norm = (s) => String(s).trim().replace(/\s+/g, ' ').toLowerCase();
-  let target = null;
-  if (sectionIndex !== undefined && sectionIndex !== null && sectionIndex !== '') {
-    target = hs[Number(sectionIndex)];
-    if (!target) throw bad('That section is not in the current version any more. Reload and pick again.');
-  } else if (section && norm(section)) {
-    target = hs.find((x) => norm(x.title) === norm(section));
-    if (!target) throw bad(`The current version has no section titled "${section}". Its sections: ${hs.map((x) => `"${x.title}"`).join(', ') || '(none)'}. Leave section out to add at the end.`);
-  }
-
-  let at = lines.length, level = 2;
-  if (target) {
-    const next = hs.find((x) => x.line > target.line && x.level <= target.level);
-    at = next ? next.line : lines.length;
-    level = Math.min(target.level + 1, 6);
-    // Stay above a divider line that closes the section, so it keeps separating the sections.
-    const rule = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
-    while (at > target.line + 1 && (!lines[at - 1].trim() || (rule.test(lines[at - 1]) && !(lines[at - 2] || '').trim()))) at--;
-  }
-  const body = [lines.slice(0, at).join('\n').trimEnd(), fitUnder(c.title, c.body, level), lines.slice(at).join('\n').trimStart()]
-    .filter(Boolean).join('\n\n');
+  const { body, target } = buildAdd(current, c, { section, sectionIndex });
   const kept = sources.filter((cid) => { const s = one('SELECT * FROM contributions WHERE id = ?', cid); return s.visibility === 'shared' || s.author_id === actor.userId; });
   return propose(actor, c.project_id, { title: current.title, body, origin: 'add', contributionIds: [...kept, c.id],
+    add: { contributionId: c.id, section: target ? target.title : null },
     summary: `Adds "${c.title}" by ${c.author_name} ${target ? `under "${target.title}"` : 'at the end'}. Nothing else changes.` });
 }
 

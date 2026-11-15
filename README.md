@@ -70,6 +70,11 @@ made (`hand`, or the AI label such as `Claude`, `ChatGPT`, `Qwen3 via LibreChat`
 **Hub tools (spec 8).** `list_projects`, `get_project`, `post_contribution`, `read_contributions`,
 `propose_combined_version`, `review_version`, `get_history`, `read_comments`, `post_comment`.
 Read tools are marked read-only; write tools ask the AI to confirm with the user first.
+A proposal goes out of date when the document changes after it was written. Its text does not contain those changes,
+so it cannot be approved until it is brought up to date. "Add to document" proposals are redone automatically on the
+new version and keep their approvals, since what reviewers agreed to has not changed. Hand edits and merges need their
+author: proposing again on the current version, as an answer to the old proposal, replaces it.
+
 Contributions have a type, and each type changes what Atelier does with it: a `draft` is offered for the document and
 shows where it stands (not yet used, proposed, or in the document since a version); `feedback` names the version or
 contribution it is about; `reference` is read first by AIs and never offered for the document; `status` is a dated
