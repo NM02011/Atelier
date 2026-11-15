@@ -68,7 +68,7 @@
   const byline = (name, via, iso) => h('span', { class: 'meta' }, name, viaPill(via), '·', whenEl(iso));
   const canWrite = (role) => role === 'owner' || role === 'editor';
   const canReview = (role) => role !== 'viewer';
-  const originLabel = (v) => ({ merge: 'combined version', counter: `counter-proposal to v${v.counter_to_number}`, restore: `restore of v${v.restored_from_number}`, edit: 'edit' }[v.origin]);
+  const originLabel = (v) => ({ merge: 'combined version', counter: `counter-proposal to v${v.counter_to_number}`, restore: `restore of v${v.restored_from_number}`, add: 'added contribution', edit: 'edit' }[v.origin] || 'edit');
 
   function setCrumbs(...parts) {
     const c = document.getElementById('crumbs');
@@ -639,6 +639,22 @@
       } }, next === 'shared' ? 'Share with project' : 'Make private'));
     }
     if (canWrite(p.my_role) && c.visibility === 'shared') acts.append(h('a', { class: 'btn', href: `#/p/${p.id}/new?mode=proposal&sources=${c.id}${p.current_version ? '&from=' + p.current_version.id : ''}` }, 'Use in a proposal'));
+    if (canWrite(p.my_role) && c.visibility === 'shared') {
+      // Mechanical add: the whole contribution goes in under the chosen heading, as a normal proposal.
+      const sections = p.current_version ? await api('GET', `/projects/${p.id}/sections`) : [];
+      const where = h('select', {}, h('option', { value: '' }, 'End of document'),
+        sections.map((s) => h('option', { value: String(s.index) }, '  '.repeat(s.level - 1) + s.title)));
+      acts.append(h('hr', { style: 'width:100%;border:0;border-top:1px solid var(--border);margin:4px 0' }),
+        p.current_version ? h('label', {}, 'Add to the document under', where) : null,
+        h('button', { class: 'primary', onclick: async () => {
+          try {
+            const v = await api('POST', `/contributions/${cid}/add-to-document`, { section_index: where.value === '' ? null : Number(where.value) });
+            toast(v.status === 'approved' ? `Added. v${v.number} is now the current version.` : `Proposed as v${v.number}. It needs approval.`);
+            location.hash = '#/v/' + v.id;
+          } catch (e) { fail(e); }
+        } }, p.current_version ? 'Propose adding to document' : 'Start the document from this'),
+        h('p', { class: 'muted small', style: 'margin:0' }, 'Adds this contribution as written. Nothing else in the document changes, and the other members approve it like any proposal.'));
+    }
     side.append(acts, await commentsPanel(c.id, canReview(p.my_role), doc));
     render(h('div', { class: 'grid2' }, main, side));
   }

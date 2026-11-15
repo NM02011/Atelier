@@ -9,7 +9,7 @@ One Node.js process serves everything:
 | Path | What it is |
 | --- | --- |
 | `/` | Web workspace: projects, invites and roles, editor, contributions, proposals and review, comments, history, activity log |
-| `/mcp` | Remote MCP server (Streamable HTTP) with the nine hub tools |
+| `/mcp` | Remote MCP server (Streamable HTTP) with the nine hub tools, plus `add_to_document` |
 | `/authorize`, `/token`, `/register`, `/.well-known/*` | OAuth 2.1 authorization server with dynamic client registration and PKCE |
 
 ## Run it locally
@@ -70,6 +70,9 @@ made (`hand`, or the AI label such as `Claude`, `ChatGPT`, `Qwen3 via LibreChat`
 **Hub tools (spec 8).** `list_projects`, `get_project`, `post_contribution`, `read_contributions`,
 `propose_combined_version`, `review_version`, `get_history`, `read_comments`, `post_comment`.
 Read tools are marked read-only; write tools ask the AI to confirm with the user first.
+`add_to_document` is a tenth tool beyond the spec: it proposes adding one shared contribution, as written, under a
+section heading of the current version (or at the end). The web app has the same action on each contribution.
+Placement is mechanical because Atelier runs no AI, and the result is an ordinary proposal that the others approve.
 `get_history` also takes a `version_id` to read one version in full, which is how a reviewer's AI reads a proposal.
 
 **Which AI made it.** When an AI app registers, Atelier guesses its label from the app name (Claude, ChatGPT,
@@ -113,7 +116,7 @@ src/config.js     Environment settings
 src/db.js         SQLite schema and helpers
 src/core.js       All domain logic and permission checks (shared by web + MCP)
 src/auth.js       Accounts, sessions, OAuth provider
-src/mcp.js        The nine MCP tools
+src/mcp.js        The MCP tools
 src/web.js        Web JSON API and the OAuth sign-in/consent pages
 public/           Single-page web workspace (no build step)
 test/e2e.js       End-to-end test of the spec's success scenario

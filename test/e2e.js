@@ -101,7 +101,7 @@ try {
     austinAI = await connectAI(austinWeb, 'Claude', 'Claude');
     nickAI = await connectAI(nickWeb, 'ChatGPT', 'ChatGPT');
     const tools = (await austinAI.client.listTools()).tools.map((t) => t.name).sort();
-    assert.deepEqual(tools, ['get_history', 'get_project', 'list_projects', 'post_comment', 'post_contribution', 'propose_combined_version', 'read_comments', 'read_contributions', 'review_version'].sort());
+    assert.deepEqual(tools, ['add_to_document', 'get_history', 'get_project', 'list_projects', 'post_comment', 'post_contribution', 'propose_combined_version', 'read_comments', 'read_contributions', 'review_version'].sort());
   });
 
   await step('list_projects and get_project', async () => {
@@ -196,6 +196,41 @@ try {
     await assert.rejects(clientAI.call('post_contribution', { project_id: project.id, title: 'x', content: 'y' }), /commenter/);
     await clientAI.call('post_comment', { target_id: draftA, comment: 'Nice start' });
     await assert.rejects(clientAI.call('read_contributions', { project_id: project.id, contribution_id: 'c_doesnotexist' }), /not found/);
+  });
+
+  await step('add a contribution to the document under a chosen section, as a proposal', async () => {
+    const p2 = await austinWeb('POST', '/api/projects', { name: 'Brief' });
+    const post = (title, body, visibility = 'shared') => austinWeb('POST', `/api/projects/${p2.id}/contributions`, { title, body, visibility });
+    const add = (c, section_index) => austinWeb('POST', `/api/contributions/${c.id}/add-to-document`, { section_index });
+    // No document yet: the contribution starts it. Austin is alone, so it is current at once.
+    const a = await post('Brief', '# Brief\n\n## Goals\n\nShip it.\n\n---\n\n## Risks\n\nNone yet.');
+    const v1 = await add(a);
+    assert.equal(v1.status, 'approved');
+    assert.equal(v1.origin, 'add');
+    const sections = await austinWeb('GET', `/api/projects/${p2.id}/sections`);
+    assert.deepEqual(sections.map((s) => `${s.level}:${s.title}`), ['1:Brief', '2:Goals', '2:Risks']);
+    // Under "Goals": lands at the end of that section, above the divider, with headings moved to fit.
+    const b = await post('Budget', '# Costs\n\nFive dollars.\n\n```\n# not a heading\n```');
+    const v2 = await add(b, 1);
+    assert.equal(v2.body, '# Brief\n\n## Goals\n\nShip it.\n\n### Costs\n\nFive dollars.\n\n```\n# not a heading\n```\n\n---\n\n## Risks\n\nNone yet.');
+    assert.deepEqual(v2.sources.map((s) => s.id), [a.id, b.id]);
+    await assert.rejects(add(b, 1), /already/);
+    await assert.rejects(add(await post('Secret', 'x', 'private')), /Share this contribution/);
+    // With a second reviewer it waits for approval, and an AI can do it by naming the heading.
+    const inv = await austinWeb('POST', `/api/projects/${p2.id}/invites`, { email: 'nick@example.com', role: 'editor' });
+    await nickWeb('POST', `/api/invites/${inv.token}/accept`, {});
+    const c = await post('Timeline note', 'Two weeks.');
+    await assert.rejects(austinAI.call('add_to_document', { contribution_id: c.id, section: 'Nope' }), /no section titled "Nope".*"Goals"/s);
+    const out = await austinAI.call('add_to_document', { contribution_id: c.id, section: 'risks' });
+    assert.match(out, /Proposed v3 .*under "Risks".*Waiting on approval from: Nick/s);
+    const p = await austinWeb('GET', `/api/projects/${p2.id}`);
+    assert.equal(p.current_version.number, 2, 'not current until Nick approves');
+    const done = await nickWeb('POST', `/api/versions/${p.open_proposals[0].id}/review`, { decision: 'approve' });
+    assert.equal(done.became_current, true);
+    assert.ok(done.body.endsWith('## Risks\n\nNone yet.\n\n### Timeline note\n\nTwo weeks.'));
+    const end = await add(await post('Appendix', 'Extra.'));
+    assert.equal(end.status, 'proposed');
+    assert.ok(end.body.endsWith('\n\n## Appendix\n\nExtra.'));
   });
 
   await step('non-members cannot see a project; refresh tokens rotate', async () => {

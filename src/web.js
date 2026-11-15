@@ -78,6 +78,8 @@ export function apiRouter() {
   r.get('/projects/:pid/contributions', handle((req) => core.listContributions(req.actor, req.params.pid, { member: req.query.member })));
   r.post('/projects/:pid/contributions', handle((req) => core.postContribution(req.actor, req.params.pid, req.body)));
   r.get('/contributions/:cid', handle((req) => core.getContribution(req.actor, req.params.cid)));
+  r.get('/projects/:pid/sections', handle((req) => core.documentSections(req.actor, req.params.pid)));
+  r.post('/contributions/:cid/add-to-document', handle((req) => core.addToDocument(req.actor, req.params.cid, { sectionIndex: req.body.section_index })));
   r.patch('/contributions/:cid', handle((req) => core.setContributionVisibility(req.actor, req.params.cid, req.body.visibility)));
 
   r.get('/projects/:pid/versions', handle((req) => core.listVersions(req.actor, req.params.pid)));

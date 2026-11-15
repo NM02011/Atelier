@@ -321,7 +321,7 @@ export function propose(actor, projectId, { title, body, summary = '', contribut
       vid, projectId, number, title, body, (summary || '').trim(), actor.userId, actor.via, origin,
       project.current_version_id, counterTo || null, restoredFrom || null, now());
     for (const cid of ids) run('INSERT INTO version_sources (version_id, contribution_id) VALUES (?,?)', vid, cid);
-    const label = { edit: 'an edit', merge: `a combined version of ${ids.length} contributions`, counter: 'a counter-proposal', restore: 'a restore of an earlier version' }[origin];
+    const label = { edit: 'an edit', merge: `a combined version of ${ids.length} contributions`, counter: 'a counter-proposal', restore: 'a restore of an earlier version', add: 'adding one contribution to the document' }[origin];
     log(projectId, actor, 'proposed', vid, `v${number}, ${label}`);
     maybeApprove(project, vid, actor);
   });
@@ -397,6 +397,83 @@ export function restore(actor, versionId) {
     contributionIds: all('SELECT contribution_id FROM version_sources WHERE version_id = ?', v.id).map((r) => r.contribution_id)
       .filter((cid) => { const c = one('SELECT * FROM contributions WHERE id = ?', cid); return c.visibility === 'shared' || c.author_id === actor.userId; }),
   });
+}
+
+// ---------- Add a contribution to the document ----------
+// Atelier runs no AI, so placement is mechanical: the contribution goes in whole, at the end of the
+// section the person picks (or the end of the document), and nothing else changes. The result is an
+// ordinary proposal, so it goes through the same approval as any other change.
+
+// Markdown headings outside code fences, with their line numbers.
+function headings(text) {
+  const out = [];
+  let fence = null;
+  text.split('\n').forEach((line, i) => {
+    const f = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (f) { if (!fence) fence = f[1][0]; else if (f[1][0] === fence) fence = null; return; }
+    if (fence) return;
+    const m = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (m) out.push({ line: i, level: m[1].length, title: m[2] });
+  });
+  return out;
+}
+
+// The contribution's text with its headings moved to sit at `level` in the document's outline.
+// If it does not open with a heading of its own, its title becomes one.
+function fitUnder(title, body, level) {
+  const hs = headings(body), lines = body.split('\n');
+  const opensWithHeading = hs.length > 0 && lines.slice(0, hs[0].line).every((l) => !l.trim());
+  const top = opensWithHeading ? level : Math.min(level + 1, 6);
+  const by = hs.length ? top - Math.min(...hs.map((x) => x.level)) : 0;
+  for (const x of hs) lines[x.line] = '#'.repeat(Math.max(1, Math.min(6, x.level + by))) + lines[x.line].replace(/^#{1,6}/, '');
+  return (opensWithHeading ? '' : `${'#'.repeat(level)} ${title}\n\n`) + lines.join('\n').trim();
+}
+
+export function documentSections(actor, projectId) {
+  const { project } = requireRole(projectId, actor);
+  if (!project.current_version_id) return [];
+  return headings(versionRow(project.current_version_id).body).map((x, index) => ({ index, level: x.level, title: x.title }));
+}
+
+// `sectionIndex` (from documentSections, used by the web app) or `section` (a heading's text, used by AIs).
+// With neither, the contribution goes at the end of the document.
+export function addToDocument(actor, contributionId, { section, sectionIndex } = {}) {
+  const c = visibleContribution(actor, contributionId);
+  const { project } = requireRole(c.project_id, actor, 'write');
+  if (c.visibility !== 'shared') throw bad('Share this contribution with the project before adding it to the document.');
+  const current = project.current_version_id ? versionRow(project.current_version_id) : null;
+  if (!current) {
+    return propose(actor, c.project_id, { title: c.title, body: c.body, origin: 'add', contributionIds: [c.id],
+      summary: `Starts the document from "${c.title}" by ${c.author_name}.` });
+  }
+  const sources = all('SELECT contribution_id FROM version_sources WHERE version_id = ?', current.id).map((r) => r.contribution_id);
+  if (sources.includes(c.id)) throw bad(`"${c.title}" is already one of the contributions the current version (v${current.number}) was built from.`);
+
+  const hs = headings(current.body), lines = current.body.split('\n');
+  const norm = (s) => String(s).trim().replace(/\s+/g, ' ').toLowerCase();
+  let target = null;
+  if (sectionIndex !== undefined && sectionIndex !== null && sectionIndex !== '') {
+    target = hs[Number(sectionIndex)];
+    if (!target) throw bad('That section is not in the current version any more. Reload and pick again.');
+  } else if (section && norm(section)) {
+    target = hs.find((x) => norm(x.title) === norm(section));
+    if (!target) throw bad(`The current version has no section titled "${section}". Its sections: ${hs.map((x) => `"${x.title}"`).join(', ') || '(none)'}. Leave section out to add at the end.`);
+  }
+
+  let at = lines.length, level = 2;
+  if (target) {
+    const next = hs.find((x) => x.line > target.line && x.level <= target.level);
+    at = next ? next.line : lines.length;
+    level = Math.min(target.level + 1, 6);
+    // Stay above a divider line that closes the section, so it keeps separating the sections.
+    const rule = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+    while (at > target.line + 1 && (!lines[at - 1].trim() || (rule.test(lines[at - 1]) && !(lines[at - 2] || '').trim()))) at--;
+  }
+  const body = [lines.slice(0, at).join('\n').trimEnd(), fitUnder(c.title, c.body, level), lines.slice(at).join('\n').trimStart()]
+    .filter(Boolean).join('\n\n');
+  const kept = sources.filter((cid) => { const s = one('SELECT * FROM contributions WHERE id = ?', cid); return s.visibility === 'shared' || s.author_id === actor.userId; });
+  return propose(actor, c.project_id, { title: current.title, body, origin: 'add', contributionIds: [...kept, c.id],
+    summary: `Adds "${c.title}" by ${c.author_name} ${target ? `under "${target.title}"` : 'at the end'}. Nothing else changes.` });
 }
 
 // ---------- Comments ----------

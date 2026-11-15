@@ -1,4 +1,4 @@
-// The remote MCP server: the nine hub tools from spec section 8.
+// The remote MCP server: the nine hub tools from spec section 8, plus add_to_document.
 // Atelier runs no AI itself. People's own Claude / ChatGPT / open-source apps call these tools.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -34,6 +34,7 @@ function versionLine(v) {
   const bits = [`v${v.number} [${v.id}] "${v.title}" — ${v.status}, by ${v.author_name} ${how(v.via)}, ${when(v.created_at)}`];
   if (v.origin === 'merge') bits.push(`combined from ${v.sources.length} contribution(s)`);
   if (v.origin === 'counter') bits.push(`counter-proposal to v${v.counter_to_number}`);
+  if (v.origin === 'add') bits.push('adds one contribution to the document, nothing else changed');
   if (v.origin === 'restore') bits.push(`restores v${v.restored_from_number}`);
   if (v.summary) bits.push(`summary: ${v.summary}`);
   if (v.approval) {
@@ -149,6 +150,20 @@ export function buildMcpServer() {
     if (v.status === 'approved') return `Saved v${v.number} [${v.id}]. No other member needs to approve, so it is now the current version.`;
     return `Proposed v${v.number} [${v.id}] "${v.title}", built from ${v.sources.length} contribution(s). ` +
       `Waiting on approval from: ${v.approval.waiting_on.join(', ')}. They can review it in Atelier (${config.baseUrl}/#/v/${v.id}) or through their own AI.`;
+  }));
+
+  server.registerTool('add_to_document', {
+    title: 'Add contribution to document',
+    description: 'Propose adding one shared contribution to the current version exactly as written, at the end of the section you name (or at the end of the document). Nothing else in the document changes, and it becomes current only after the other members approve it. To rewrite, shorten or blend text, use propose_combined_version instead.' + CONFIRM,
+    inputSchema: {
+      contribution_id: z.string().describe('The contribution to add (c_...)'),
+      section: z.string().optional().describe('Text of the heading to add it under, as it appears in the current version (see get_project). Leave out to add at the end.'),
+    },
+    annotations: WRITE,
+  }, wrap(async ({ contribution_id, section }, actor) => {
+    const v = core.addToDocument(actor, contribution_id, { section });
+    if (v.status === 'approved') return `Saved v${v.number} [${v.id}]. ${v.summary} No other member needs to approve, so it is now the current version.`;
+    return `Proposed v${v.number} [${v.id}]. ${v.summary} Waiting on approval from: ${v.approval.waiting_on.join(', ')}. They can review it in Atelier (${config.baseUrl}/#/v/${v.id}) or through their own AI.`;
   }));
 
   server.registerTool('review_version', {
