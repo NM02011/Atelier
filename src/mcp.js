@@ -1,4 +1,4 @@
-// The remote MCP server: the nine hub tools from spec section 8, plus add_to_document.
+// The remote MCP server: the nine hub tools from spec section 8, plus add_to_document and create_project.
 // Atelier runs no AI itself. People's own Claude / ChatGPT / open-source apps call these tools.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -64,8 +64,22 @@ export function buildMcpServer() {
     annotations: READ,
   }, wrap(async (_a, actor) => {
     const ps = core.listProjects(actor);
-    if (!ps.length) return `You are not in any projects yet. Create one at ${config.baseUrl}.`;
+    if (!ps.length) return `You are not in any projects yet. Create one with create_project, or at ${config.baseUrl}.`;
     return ps.map((p) => `- ${p.name} [${p.id}] — your role: ${p.role}; ${p.member_count} member(s); ${p.open_proposals} open proposal(s)${p.goal ? `\n  Goal: ${p.goal}` : ''}`).join('\n');
+  }));
+
+  server.registerTool('create_project', {
+    title: 'Create project',
+    description: 'Start a new Atelier project with a name and a goal. The user becomes its owner and only member; they invite others from the project page on the web.' + CONFIRM,
+    inputSchema: {
+      name: z.string().describe('Project name, e.g. "Trail guide pitch"'),
+      goal: z.string().default('').describe('One sentence on what the finished document should do'),
+    },
+    annotations: WRITE,
+  }, wrap(async ({ name, goal }, actor) => {
+    const p = core.createProject(actor, { name, goal });
+    return `Created project "${p.name}" [${p.id}]. You are its owner and only member. ` +
+      `Invite others from the Members tab: ${config.baseUrl}/#/p/${p.id}/members. Post a first draft with post_contribution.`;
   }));
 
   server.registerTool('get_project', {

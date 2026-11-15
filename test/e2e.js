@@ -101,7 +101,7 @@ try {
     austinAI = await connectAI(austinWeb, 'Claude', 'Claude');
     nickAI = await connectAI(nickWeb, 'ChatGPT', 'ChatGPT');
     const tools = (await austinAI.client.listTools()).tools.map((t) => t.name).sort();
-    assert.deepEqual(tools, ['add_to_document', 'get_history', 'get_project', 'list_projects', 'post_comment', 'post_contribution', 'propose_combined_version', 'read_comments', 'read_contributions', 'review_version'].sort());
+    assert.deepEqual(tools, ['add_to_document', 'create_project', 'get_history', 'get_project', 'list_projects', 'post_comment', 'post_contribution', 'propose_combined_version', 'read_comments', 'read_contributions', 'review_version'].sort());
   });
 
   await step('list_projects and get_project', async () => {
@@ -231,6 +231,19 @@ try {
     const end = await add(await post('Appendix', 'Extra.'));
     assert.equal(end.status, 'proposed');
     assert.ok(end.body.endsWith('\n\n## Appendix\n\nExtra.'));
+  });
+
+  await step('an AI can create a project; the person owns it and it is credited to them and their AI', async () => {
+    const out = await nickAI.call('create_project', { name: 'Nick via AI', goal: 'Test it' });
+    const pid = out.match(/\[(p_[^\]]+)\]/)[1];
+    const p = await nickWeb('GET', `/api/projects/${pid}`);
+    assert.equal(p.my_role, 'owner');
+    assert.equal(p.goal, 'Test it');
+    assert.match(await nickAI.call('list_projects'), /Nick via AI/);
+    const log = await nickWeb('GET', `/api/projects/${pid}/activity`);
+    assert.ok(log.some((a) => a.action === 'created_project' && a.via === 'ChatGPT'));
+    await assert.rejects(nickAI.call('create_project', { name: '  ' }), /needs a name/);
+    await assert.rejects(austinWeb('GET', `/api/projects/${pid}`), /not found/);
   });
 
   await step('non-members cannot see a project; refresh tokens rotate', async () => {
