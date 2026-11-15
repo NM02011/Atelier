@@ -1,4 +1,4 @@
-// The remote MCP server: the nine hub tools from spec section 8, plus add_to_document and create_project.
+// The remote MCP server: the nine hub tools from spec section 8, plus add_to_document, create_project and invite_member.
 // Atelier runs no AI itself. People's own Claude / ChatGPT / open-source apps call these tools.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -70,7 +70,7 @@ export function buildMcpServer() {
 
   server.registerTool('create_project', {
     title: 'Create project',
-    description: 'Start a new Atelier project with a name and a goal. The user becomes its owner and only member; they invite others from the project page on the web.' + CONFIRM,
+    description: 'Start a new Atelier project with a name and a goal. The user becomes its owner and only member; they invite others with invite_member or from the project page on the web.' + CONFIRM,
     inputSchema: {
       name: z.string().describe('Project name, e.g. "Trail guide pitch"'),
       goal: z.string().default('').describe('One sentence on what the finished document should do'),
@@ -79,7 +79,24 @@ export function buildMcpServer() {
   }, wrap(async ({ name, goal }, actor) => {
     const p = core.createProject(actor, { name, goal });
     return `Created project "${p.name}" [${p.id}]. You are its owner and only member. ` +
-      `Invite others from the Members tab: ${config.baseUrl}/#/p/${p.id}/members. Post a first draft with post_contribution.`;
+      `Invite others with invite_member, or from the Members tab: ${config.baseUrl}/#/p/${p.id}/members. Post a first draft with post_contribution.`;
+  }));
+
+  server.registerTool('invite_member', {
+    title: 'Invite member',
+    description: 'Create an invite link that lets one person join a project with a role. Only the project owner can do this. Atelier sends no email: give the link to the user so they can send it themselves. Anyone who has the link can join, so confirm the email and role first.' + CONFIRM,
+    inputSchema: {
+      project_id: z.string().describe('Project id'),
+      email: z.string().describe('Email address of the person being invited'),
+      role: z.enum(['editor', 'commenter', 'viewer']).default('editor').describe('editor: writes and proposes. commenter: reads, comments and approves (usual for an outside client). viewer: reads only.'),
+    },
+    annotations: WRITE,
+  }, wrap(async ({ project_id, email, role }, actor) => {
+    const inv = core.createInvite(actor, project_id, { email, role });
+    return `Invite link for ${inv.email} to join as ${inv.role}: ${config.baseUrl}/invite/${inv.token}\n` +
+      `Atelier has not sent anything. Give this link to the user to send to ${inv.email}.` +
+      (config.signupCode ? ' To create an account they will also need the sign-up code, which the user should send separately.' : '') +
+      ` The owner can revoke it from the Members tab: ${config.baseUrl}/#/p/${project_id}/members.`;
   }));
 
   server.registerTool('get_project', {

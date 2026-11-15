@@ -9,7 +9,7 @@ One Node.js process serves everything:
 | Path | What it is |
 | --- | --- |
 | `/` | Web workspace: projects, invites and roles, editor, contributions, proposals and review, comments, history, activity log |
-| `/mcp` | Remote MCP server (Streamable HTTP) with the nine hub tools, plus `add_to_document` and `create_project` |
+| `/mcp` | Remote MCP server (Streamable HTTP) with the nine hub tools, plus `add_to_document`, `create_project` and `invite_member` |
 | `/authorize`, `/token`, `/register`, `/.well-known/*` | OAuth 2.1 authorization server with dynamic client registration and PKCE |
 
 ## Run it locally
@@ -70,7 +70,8 @@ made (`hand`, or the AI label such as `Claude`, `ChatGPT`, `Qwen3 via LibreChat`
 **Hub tools (spec 8).** `list_projects`, `get_project`, `post_contribution`, `read_contributions`,
 `propose_combined_version`, `review_version`, `get_history`, `read_comments`, `post_comment`.
 Read tools are marked read-only; write tools ask the AI to confirm with the user first.
-Two tools go beyond the spec. `create_project` starts a project from an AI app (the person becomes its owner).
+Three tools go beyond the spec. `create_project` starts a project from an AI app (the person becomes its owner).
+`invite_member` lets the owner's AI create an invite link for one email and role; Atelier still sends nothing itself.
 `add_to_document` proposes adding one shared contribution, as written, under a
 section heading of the current version (or at the end). The web app has the same action on each contribution.
 Placement is mechanical because Atelier runs no AI, and the result is an ordinary proposal that the others approve.

@@ -101,7 +101,7 @@ try {
     austinAI = await connectAI(austinWeb, 'Claude', 'Claude');
     nickAI = await connectAI(nickWeb, 'ChatGPT', 'ChatGPT');
     const tools = (await austinAI.client.listTools()).tools.map((t) => t.name).sort();
-    assert.deepEqual(tools, ['add_to_document', 'create_project', 'get_history', 'get_project', 'list_projects', 'post_comment', 'post_contribution', 'propose_combined_version', 'read_comments', 'read_contributions', 'review_version'].sort());
+    assert.deepEqual(tools, ['add_to_document', 'create_project', 'get_history', 'get_project', 'invite_member', 'list_projects', 'post_comment', 'post_contribution', 'propose_combined_version', 'read_comments', 'read_contributions', 'review_version'].sort());
   });
 
   await step('list_projects and get_project', async () => {
@@ -244,6 +244,21 @@ try {
     assert.ok(log.some((a) => a.action === 'created_project' && a.via === 'ChatGPT'));
     await assert.rejects(nickAI.call('create_project', { name: '  ' }), /needs a name/);
     await assert.rejects(austinWeb('GET', `/api/projects/${pid}`), /not found/);
+  });
+
+  await step('an owner\'s AI can create an invite link; non-owners cannot', async () => {
+    const pid = (await nickAI.call('create_project', { name: 'Invite test' })).match(/\[(p_[^\]]+)\]/)[1];
+    const out = await nickAI.call('invite_member', { project_id: pid, email: 'Austin@Example.com', role: 'commenter' });
+    assert.match(out, /austin@example\.com to join as commenter/);
+    const token = out.match(/\/invite\/(\S+)/)[1];
+    await austinWeb('POST', `/api/invites/${token}/accept`, {});
+    const p = await austinWeb('GET', `/api/projects/${pid}`);
+    assert.equal(p.my_role, 'commenter');
+    const log = await nickWeb('GET', `/api/projects/${pid}/activity`);
+    assert.ok(log.some((a) => a.action === 'invited' && a.via === 'ChatGPT'));
+    await assert.rejects(austinAI.call('invite_member', { project_id: pid, email: 'z@example.com' }), /cannot manage this project/);
+    await assert.rejects(nickAI.call('invite_member', { project_id: pid, email: 'austin@example.com' }), /already a member/);
+    await assert.rejects(nickAI.call('invite_member', { project_id: pid, email: 'not-an-email' }), /valid email/);
   });
 
   await step('non-members cannot see a project; refresh tokens rotate', async () => {
