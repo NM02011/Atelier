@@ -198,7 +198,7 @@
   async function projectView(pid, tab, params) {
     const p = await api('GET', '/projects/' + pid);
     setCrumbs(h('a', { href: '#/' }, 'Projects'), h('a', { href: '#/p/' + pid }, p.name));
-    const tabs = [['document', 'Document'], ['contributions', 'Contributions'], ['history', 'History'], ['activity', 'Activity'], ['members', 'Members'], ['connect', 'Connect AI']];
+    const tabs = [['document', 'Document'], ['contributions', 'Contributions'], ['history', 'History'], ['activity', 'Activity'], ['next', 'Next steps'], ['members', 'Members'], ['connect', 'Connect AI']];
     const header = h('div', {},
       h('div', { class: 'row between' }, h('h1', { style: 'margin:0' }, p.name),
         canWrite(p.my_role) ? h('div', { class: 'row' },
@@ -208,7 +208,7 @@
       p.goal ? h('p', { class: 'muted', style: 'margin-top:6px' }, p.goal) : null,
       h('nav', { class: 'tabs' }, tabs.map(([k, label]) => h('a', { href: `#/p/${pid}/${k}`, class: tab === k ? 'active' : '' }, label,
         k === 'document' && p.open_proposals.length ? h('span', { class: 'count' }, p.open_proposals.length) : null))));
-    const body = await ({ document: docTab, contributions: contribTab, history: historyTab, activity: activityTab, members: membersTab, connect: connectTab }[tab] || docTab)(p, params);
+    const body = await ({ document: docTab, contributions: contribTab, history: historyTab, activity: activityTab, next: nextStepsTab, members: membersTab, connect: connectTab }[tab] || docTab)(p, params);
     render(header, body);
   }
 
@@ -283,13 +283,47 @@
     created_project: 'created the project', invited: 'invited', joined: 'joined', posted_contribution: 'posted a contribution',
     shared_contribution: 'shared a contribution', made_private: 'made a contribution private', proposed: 'proposed', approved: 'approved',
     requested_changes: 'requested changes on', became_current: '', withdrew: 'withdrew', commented: 'commented on', replied: 'replied on',
-    changed_role: 'changed a role', removed_member: 'removed', left: 'left the project', updated_project: 'updated the project',
+    changed_role: 'changed a role', removed_member: 'removed', left: 'left the project', updated_project: 'updated the project', updated_next_steps: 'updated the next steps',
   };
   function targetLink(id, text) {
     if (!id) return null;
     if (id.startsWith('v_')) return h('a', { href: '#/v/' + id }, text);
     if (id.startsWith('c_')) return h('a', { href: '#/c/' + id }, text);
     return text;
+  }
+  async function nextStepsTab(p) {
+    const ns = await api('GET', `/projects/${p.id}/next-steps`);
+    const cur = ns.current;
+    const out = h('div', { class: 'stack' });
+    const card = h('div', { class: 'card' });
+    if (cur) {
+      card.append(h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Next steps'), byline(cur.author_name, cur.via, cur.created_at)));
+      if (ns.changes_since.length) {
+        const n = ns.changes_since.length;
+        card.append(h('p', { class: 'muted small', style: 'margin:8px 0 0' },
+          h('span', { class: 'pill' }, 'May be out of date'), ` ${n} change${n === 1 ? '' : 's'} to the project since these were written. Ask your AI to refresh the next steps, or update them by hand below.`));
+      }
+      card.append(h('div', { style: 'margin-top:12px' }, md(cur.body)));
+    } else {
+      card.append(h('h2', { style: 'margin:0' }, 'Next steps'),
+        h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'None yet. A connected AI writes them after it changes the project, and refreshes them each time. You can also write them by hand.'));
+    }
+    out.append(card);
+    if (canReview(p.my_role)) {
+      const box = h('textarea', { rows: 8, placeholder: '1. What to do, who does it, and why it matters…', value: cur ? cur.body : '' });
+      out.append(h('details', { class: 'card' }, h('summary', {}, cur ? 'Update by hand' : 'Write by hand'),
+        h('div', { class: 'stack', style: 'margin-top:12px' }, box,
+          h('p', { class: 'muted small', style: 'margin:0' }, 'Saving replaces the list above. The old one moves to the history.'),
+          h('div', {}, h('button', { class: 'primary', onclick: async () => {
+            try { await api('POST', `/projects/${p.id}/next-steps`, { body: box.value }); toast('Next steps saved'); route(); } catch (e) { fail(e); }
+          } }, 'Save next steps')))));
+    }
+    if (ns.history.length) {
+      out.append(h('div', { class: 'card' }, h('h2', { style: 'margin:0 0 4px' }, 'History'),
+        ns.history.map((n) => h('details', { style: 'padding:8px 0;border-top:1px solid var(--border)' },
+          h('summary', {}, byline(n.author_name, n.via, n.created_at)), h('div', { style: 'margin-top:8px' }, md(n.body))))));
+    }
+    return out;
   }
   async function activityTab(p) {
     const rows = await api('GET', `/projects/${p.id}/activity`);

@@ -104,6 +104,15 @@ CREATE TABLE IF NOT EXISTS comments (
   via TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS next_steps (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  author_id TEXT NOT NULL REFERENCES users(id),
+  body TEXT NOT NULL,
+  via TEXT NOT NULL,
+  activity_mark INTEGER NOT NULL DEFAULT 0,    -- newest activity row when these were written; later rows mean they are out of date
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS activity (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

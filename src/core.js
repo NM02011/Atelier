@@ -517,6 +517,48 @@ export function postComment(actor, { targetId, body, parentId, quote }) {
   return one(`${commentSelect} WHERE m.id = ?`, mid);
 }
 
+// ---------- Next steps ----------
+// A short plan of what should happen next in the project. Each save replaces the one before it and the
+// old ones are kept as history. Atelier runs no AI: a member's own AI writes them (the MCP write tools
+// ask it to after every change), or a member writes them by hand.
+
+const NEXT_STEPS_ACTION = 'updated_next_steps';
+
+export function listNextSteps(actor, projectId, limit = 50) {
+  requireRole(projectId, actor);
+  const rows = all(`SELECT n.id, n.project_id, n.author_id, n.body, n.via, n.activity_mark, n.created_at, u.name AS author_name
+    FROM next_steps n LEFT JOIN users u ON u.id = n.author_id
+    WHERE n.project_id = ? ORDER BY n.activity_mark DESC, n.created_at DESC LIMIT ?`, projectId, limit);
+  const current = rows[0] ?? null;
+  // What has happened in the project since they were written (already filtered for privacy).
+  const changes = listActivity(actor, projectId, 100)
+    .filter((a) => a.action !== NEXT_STEPS_ACTION && a.id > (current ? current.activity_mark : 0))
+    // The viewer's own private notes count as changes for them, but are flagged so they stay out of shared plans.
+    .map((a) => ({ ...a, private: Boolean(a.target_id?.startsWith('c_') && one('SELECT visibility FROM contributions WHERE id = ?', a.target_id)?.visibility === 'private') }));
+  return { current, history: rows.slice(1), changes_since: current ? changes : [] };
+}
+
+export function saveNextSteps(actor, projectId, body) {
+  requireRole(projectId, actor, 'comment');
+  body = (body || '').trim();
+  if (!body) throw bad('The next steps are empty.');
+  if (body.length > 20000) throw bad('Next steps should be a short list. Keep them under 20,000 characters.');
+  const nid = id('n');
+  const mark = one('SELECT COALESCE(MAX(id), 0) AS m FROM activity WHERE project_id = ?', projectId).m;
+  run('INSERT INTO next_steps (id, project_id, author_id, body, via, activity_mark, created_at) VALUES (?,?,?,?,?,?,?)',
+    nid, projectId, actor.userId, body, actor.via, mark, now());
+  log(projectId, actor, NEXT_STEPS_ACTION, nid);
+  return listNextSteps(actor, projectId).current;
+}
+
+// Shared contributions that the current version was not built from: candidates for "add this" steps.
+export function unusedContributions(actor, projectId) {
+  const { project } = requireRole(projectId, actor);
+  const used = new Set(project.current_version_id
+    ? all('SELECT contribution_id FROM version_sources WHERE version_id = ?', project.current_version_id).map((r) => r.contribution_id) : []);
+  return listContributions(actor, projectId).filter((c) => c.visibility === 'shared' && !used.has(c.id));
+}
+
 // ---------- Activity ----------
 
 export function listActivity(actor, projectId, limit = 200) {

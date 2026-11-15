@@ -97,6 +97,8 @@ export function apiRouter() {
     targetId: req.body.target_id, body: req.body.body, parentId: req.body.parent_id, quote: req.body.quote,
   })));
 
+  r.get('/projects/:pid/next-steps', handle((req) => core.listNextSteps(req.actor, req.params.pid)));
+  r.post('/projects/:pid/next-steps', handle((req) => core.saveNextSteps(req.actor, req.params.pid, req.body.body)));
   r.get('/projects/:pid/activity', handle((req) => core.listActivity(req.actor, req.params.pid)));
   return r;
 }

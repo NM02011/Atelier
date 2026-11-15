@@ -101,7 +101,7 @@ try {
     austinAI = await connectAI(austinWeb, 'Claude', 'Claude');
     nickAI = await connectAI(nickWeb, 'ChatGPT', 'ChatGPT');
     const tools = (await austinAI.client.listTools()).tools.map((t) => t.name).sort();
-    assert.deepEqual(tools, ['add_to_document', 'create_project', 'get_history', 'get_project', 'invite_member', 'list_projects', 'post_comment', 'post_contribution', 'propose_combined_version', 'read_comments', 'read_contributions', 'review_version'].sort());
+    assert.deepEqual(tools, ['add_to_document', 'create_project', 'get_history', 'get_project', 'invite_member', 'plan_next_steps', 'list_projects', 'post_comment', 'post_contribution', 'propose_combined_version', 'read_comments', 'read_contributions', 'review_version', 'save_next_steps'].sort());
   });
 
   await step('list_projects and get_project', async () => {
@@ -259,6 +259,46 @@ try {
     await assert.rejects(austinAI.call('invite_member', { project_id: pid, email: 'z@example.com' }), /cannot manage this project/);
     await assert.rejects(nickAI.call('invite_member', { project_id: pid, email: 'austin@example.com' }), /already a member/);
     await assert.rejects(nickAI.call('invite_member', { project_id: pid, email: 'not-an-email' }), /valid email/);
+  });
+
+  await step('next steps: writes ask for a refresh, each save replaces the list, history is kept', async () => {
+    const made = await nickAI.call('create_project', { name: 'Steps test', goal: 'Try next steps' });
+    const pid = made.match(/\[(p_[^\]]+)\]/)[1];
+    assert.match(made, new RegExp(`next steps are now out of date.*plan_next_steps.*"${pid}".*save_next_steps`, 's'));
+    assert.deepEqual(await nickWeb('GET', `/api/projects/${pid}/next-steps`), { current: null, history: [], changes_since: [] });
+    const plan = await nickAI.call('plan_next_steps', { project_id: pid });
+    assert.match(plan, /Goal: Try next steps/);
+    assert.match(plan, /None yet\. This will be the first list\./);
+    assert.match(await nickAI.call('save_next_steps', { project_id: pid, steps: '1. Write the draft (Nick).' }), /Saved next steps \[n_/);
+    let ns = await nickWeb('GET', `/api/projects/${pid}/next-steps`);
+    assert.equal(ns.current.body, '1. Write the draft (Nick).');
+    assert.equal(ns.current.via, 'ChatGPT');
+    assert.equal(ns.changes_since.length, 0, 'fresh right after saving');
+    // A shared write makes them out of date and says so; a private one does not ask for a refresh.
+    const posted = await nickAI.call('post_contribution', { project_id: pid, title: 'Draft one', content: 'Hello.' });
+    assert.match(posted, /next steps are now out of date/);
+    assert.doesNotMatch(await nickAI.call('post_contribution', { project_id: pid, title: 'Secret plan', content: 'x', visibility: 'private' }), /out of date/);
+    ns = await nickWeb('GET', `/api/projects/${pid}/next-steps`);
+    assert.equal(ns.changes_since.length, 2);
+    const plan2 = await nickAI.call('plan_next_steps', { project_id: pid });
+    assert.match(plan2, /not yet in the document\n- \[c_[^\]]+\] "Draft one"/);
+    assert.doesNotMatch(plan2, /Secret plan/, 'private notes are not offered as material');
+    assert.match(plan2, /1\. Write the draft \(Nick\)\./, 'previous list is shown');
+    // Saving by hand replaces the list; the old one moves to history.
+    await nickWeb('POST', `/api/projects/${pid}/next-steps`, { body: '1. Add "Draft one" to the document (Nick).' });
+    ns = await nickWeb('GET', `/api/projects/${pid}/next-steps`);
+    assert.equal(ns.current.via, 'hand');
+    assert.deepEqual(ns.history.map((n) => n.body), ['1. Write the draft (Nick).']);
+    assert.equal(ns.changes_since.length, 0);
+    await assert.rejects(nickWeb('POST', `/api/projects/${pid}/next-steps`, { body: '  ' }), /empty/);
+    await assert.rejects(austinWeb('GET', `/api/projects/${pid}/next-steps`), /not found/);
+    // Another member does not see someone else's private note in "what changed".
+    const inv = await nickWeb('POST', `/api/projects/${pid}/invites`, { email: 'austin@example.com', role: 'viewer' });
+    await austinWeb('POST', `/api/invites/${inv.token}/accept`, {});
+    await nickAI.call('post_contribution', { project_id: pid, title: 'Hidden', content: 'y', visibility: 'private' });
+    const seen = await austinWeb('GET', `/api/projects/${pid}/next-steps`);
+    assert.ok(!JSON.stringify(seen).includes('Hidden'));
+    await assert.rejects(austinWeb('POST', `/api/projects/${pid}/next-steps`, { body: 'x' }), /viewer/);
   });
 
   await step('non-members cannot see a project; refresh tokens rotate', async () => {
