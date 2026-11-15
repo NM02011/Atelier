@@ -79,6 +79,7 @@ export function apiRouter() {
   r.post('/projects/:pid/contributions', handle((req) => core.postContribution(req.actor, req.params.pid, req.body)));
   r.get('/contributions/:cid', handle((req) => core.getContribution(req.actor, req.params.cid)));
   r.get('/projects/:pid/sections', handle((req) => core.documentSections(req.actor, req.params.pid)));
+  r.post('/contributions/:cid/replace-document', handle((req) => core.replaceDocument(req.actor, req.params.cid)));
   r.post('/contributions/:cid/add-to-document', handle((req) => core.addToDocument(req.actor, req.params.cid, { sectionIndex: req.body.section_index })));
   r.patch('/contributions/:cid', handle((req) => (req.body.kind !== undefined
     ? core.setContributionKind(req.actor, req.params.cid, req.body.kind, { about: req.body.about })

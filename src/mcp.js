@@ -38,6 +38,7 @@ function versionLine(v) {
   const bits = [`v${v.number} [${v.id}] "${v.title}" — ${v.status}, by ${v.author_name} ${how(v.via)}, ${when(v.created_at)}`];
   if (v.origin === 'merge') bits.push(`combined from ${v.sources.length} contribution(s)`);
   if (v.origin === 'counter') bits.push(`counter-proposal to v${v.counter_to_number}`);
+  if (v.origin === 'replace') bits.push('replaces the whole document with one contribution');
   if (v.origin === 'add') bits.push('adds one contribution to the document, nothing else changed');
   if (v.origin === 'update') bits.push(`brings v${v.counter_to_number} up to date with the current version`);
   if (v.origin === 'restore') bits.push(`restores v${v.restored_from_number}`);

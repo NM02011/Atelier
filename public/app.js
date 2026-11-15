@@ -93,7 +93,7 @@
   const byline = (name, via, iso) => h('span', { class: 'meta' }, name, viaPill(via), '·', whenEl(iso));
   const canWrite = (role) => role === 'owner' || role === 'editor';
   const canReview = (role) => role !== 'viewer';
-  const originLabel = (v) => ({ merge: 'combined version', counter: `counter-proposal to v${v.counter_to_number}`, restore: `restore of v${v.restored_from_number}`, add: 'added contribution', update: `v${v.counter_to_number} brought up to date`, edit: 'edit' }[v.origin] || 'edit');
+  const originLabel = (v) => ({ merge: 'combined version', counter: `counter-proposal to v${v.counter_to_number}`, restore: `restore of v${v.restored_from_number}`, add: 'added contribution', replace: 'replaced the whole document', update: `v${v.counter_to_number} brought up to date`, edit: 'edit' }[v.origin] || 'edit');
 
   function setCrumbs(...parts) {
     const c = document.getElementById('crumbs');
@@ -822,6 +822,19 @@
           } catch (e) { fail(e); }
         } }, p.current_version ? 'Propose adding to document' : 'Start the document from this'),
         h('p', { class: 'muted small', style: 'margin:0' }, 'Adds this contribution as written. Nothing else in the document changes, and the other members approve it like any proposal.'));
+    }
+    if (canWrite(p.my_role) && c.visibility === 'shared' && c.kind === 'draft' && !c.replaced_by_id && p.current_version && p.current_version.body.trim() !== c.body.trim()) {
+      // Whole-document replace: for a draft that is a rewrite of the document, where adding would duplicate it.
+      acts.append(h('hr', { style: 'width:100%;border:0;border-top:1px solid var(--border);margin:4px 0' }),
+        h('button', { onclick: async () => {
+          if (!confirm(`Propose replacing the whole document (v${p.current_version.number}) with this draft? Everything in the current document that is not in this draft would be removed.`)) return;
+          try {
+            const v = await api('POST', `/contributions/${cid}/replace-document`, {});
+            toast(v.status === 'approved' ? `Replaced. v${v.number} is now the current version.` : `Proposed as v${v.number}. It needs approval.`);
+            location.hash = '#/v/' + v.id;
+          } catch (e) { fail(e); }
+        } }, 'Propose replacing the document'),
+        h('p', { class: 'muted small', style: 'margin:0' }, 'Makes this draft the whole document, in place of the current text. The other members approve it like any proposal, and earlier versions stay in History.'));
     }
     side.append(acts, await commentsPanel(c.id, canReview(p.my_role), doc));
     render(h('div', { class: 'grid2' }, main, side));

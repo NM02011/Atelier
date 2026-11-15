@@ -407,7 +407,7 @@ export function propose(actor, projectId, { title, body, summary = '', contribut
       project.current_version_id, counterTo || null, restoredFrom || null, add?.contributionId ?? null, add?.section ?? null, now());
     if (updating) run(`UPDATE versions SET status = 'replaced', decided_at = ? WHERE id = ?`, now(), updating.id);
     for (const cid of ids) run('INSERT INTO version_sources (version_id, contribution_id) VALUES (?,?)', vid, cid);
-    const label = { edit: 'an edit', merge: `a combined version of ${ids.length} contributions`, counter: 'a counter-proposal', restore: 'a restore of an earlier version', add: 'adding one contribution to the document', update: `an update of v${updating?.number}, which was out of date` }[origin];
+    const label = { edit: 'an edit', merge: `a combined version of ${ids.length} contributions`, counter: 'a counter-proposal', restore: 'a restore of an earlier version', add: 'adding one contribution to the document', replace: 'replacing the whole document with one contribution', update: `an update of v${updating?.number}, which was out of date` }[origin];
     log(projectId, actor, 'proposed', vid, `v${number}, ${label}`);
     maybeApprove(project, vid, actor);
   });
@@ -597,6 +597,24 @@ export function addToDocument(actor, contributionId, { section, sectionIndex } =
   return propose(actor, c.project_id, { title: current.title, body, origin: 'add', contributionIds: [...kept, c.id],
     add: { contributionId: c.id, section: target ? target.title : null },
     summary: `Adds "${c.title}" by ${c.author_name} ${target ? `under "${target.title}"` : 'at the end'}. Nothing else changes.` });
+}
+
+// Propose one draft as the whole document, in place of the current text. An ordinary proposal: the others
+// approve it, and the "what changed" view shows everything that would be removed.
+export function replaceDocument(actor, contributionId) {
+  const c = visibleContribution(actor, contributionId);
+  const { project } = requireRole(c.project_id, actor, 'write');
+  if (c.kind !== 'draft') throw bad(`Only drafts can become the document, and "${c.title}" is filed as ${c.kind}. Its author or the project owner can change its type to draft.`);
+  if (c.replaced_by_id) throw bad(`"${c.title}" has been replaced by "${c.replaced_by_title}". Use that one instead.`);
+  if (c.visibility !== 'shared') throw bad('Share this contribution with the project before proposing it as the document.');
+  const current = project.current_version_id ? versionRow(project.current_version_id) : null;
+  if (!current) return addToDocument(actor, contributionId);
+  if (current.body.trim() === c.body.trim()) throw bad(`The current version (v${current.number}) already has exactly this text.`);
+  // A rewrite of the document is still built from what the document was built from.
+  const kept = all('SELECT contribution_id FROM version_sources WHERE version_id = ?', current.id).map((r) => r.contribution_id)
+    .filter((cid) => { const s = one('SELECT * FROM contributions WHERE id = ?', cid); return cid !== c.id && (s.visibility === 'shared' || s.author_id === actor.userId); });
+  return propose(actor, c.project_id, { title: current.title, body: c.body, origin: 'replace', contributionIds: [...kept, c.id],
+    summary: `Replaces the whole document with "${c.title}" by ${c.author_name}. Check what is removed before approving.` });
 }
 
 // ---------- Comments ----------

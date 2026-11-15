@@ -413,6 +413,29 @@ try {
     assert.deepEqual(after.open_proposals.map((v) => [v.id, v.stale]), [[y.id, true]], 'the second is held as out of date');
   });
 
+  await step('a draft can be proposed as the whole document, replacing the current text', async () => {
+    const pid = (await nickAI.call('create_project', { name: 'Replace test' })).match(/\[(p_[^\]]+)\]/)[1];
+    const post = (title, body, kind = 'draft') => nickWeb('POST', `/api/projects/${pid}/contributions`, { title, body, kind, visibility: 'shared' });
+    const first = await post('First', '# Doc\n\nOld text.');
+    const v1 = await nickWeb('POST', `/api/contributions/${first.id}/replace-document`, {});   // no document yet: starts it
+    assert.equal(v1.status, 'approved');
+    await assert.rejects(nickWeb('POST', `/api/contributions/${first.id}/replace-document`, {}), /already has exactly this text/);
+    await assert.rejects(nickWeb('POST', `/api/contributions/${(await post('Ref', 'x', 'reference')).id}/replace-document`, {}), /Only drafts/);
+    const inv = await nickWeb('POST', `/api/projects/${pid}/invites`, { email: 'austin@example.com', role: 'editor' });
+    await austinWeb('POST', `/api/invites/${inv.token}/accept`, {});
+    const rewrite = await post('Rewrite', '# Doc\n\nAll new text.');
+    const v2 = await nickWeb('POST', `/api/contributions/${rewrite.id}/replace-document`, {});
+    assert.equal(v2.status, 'proposed', 'needs approval like any proposal');
+    assert.equal(v2.origin, 'replace');
+    assert.equal(v2.body, '# Doc\n\nAll new text.');
+    assert.equal(v2.title, v1.title, 'keeps the document title');
+    assert.deepEqual(v2.sources.map((s) => s.id), [first.id, rewrite.id]);
+    assert.equal((await austinWeb('POST', `/api/versions/${v2.id}/review`, { decision: 'approve' })).became_current, true);
+    const cur = (await nickWeb('GET', `/api/projects/${pid}`)).current_version;
+    assert.equal(cur.body, '# Doc\n\nAll new text.');
+    assert.equal((await nickWeb('GET', `/api/contributions/${rewrite.id}`)).standing.state, 'in_document');
+  });
+
   await step('non-members cannot see a project; refresh tokens rotate', async () => {
     const outsider = webClient();
     await outsider('POST', '/api/signup', { email: 'x@example.com', name: 'X', password: 'password000' });

@@ -70,6 +70,9 @@ made (`hand`, or the AI label such as `Claude`, `ChatGPT`, `Qwen3 via LibreChat`
 **Hub tools (spec 8).** `list_projects`, `get_project`, `post_contribution`, `read_contributions`,
 `propose_combined_version`, `review_version`, `get_history`, `read_comments`, `post_comment`.
 Read tools are marked read-only; write tools ask the AI to confirm with the user first.
+A draft can also be proposed as the whole document from its page ("Propose replacing the document"), for rewrites
+where adding would duplicate the text. It is an ordinary proposal and needs the same approval.
+
 A proposal goes out of date when the document changes after it was written. Its text does not contain those changes,
 so it cannot be approved until it is brought up to date. "Add to document" proposals are redone automatically on the
 new version and keep their approvals, since what reviewers agreed to has not changed. Hand edits and merges need their
